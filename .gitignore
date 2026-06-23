@@ -1,0 +1,3 @@
+.codex-session-tools.env
+__pycache__/
+*.pyc

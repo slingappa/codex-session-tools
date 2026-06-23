@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="289" viewBox="0 0 1120 289" role="img" aria-label="codex-sessions list">
+<rect width="100%" height="100%" rx="14" fill="#0b1020"/>
+<rect x="0" y="0" width="100%" height="42" rx="14" fill="#111827"/>
+<circle cx="22" cy="21" r="6" fill="#ef4444"/>
+<circle cx="42" cy="21" r="6" fill="#f59e0b"/>
+<circle cx="62" cy="21" r="6" fill="#22c55e"/>
+<text x="86" y="26" fill="#d1d5db" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14">codex-sessions list</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" xml:space="preserve">
+<text x="24" y="62" fill="#7dd3fc">$ codex-sessions list -n 8</text>
+<text x="24" y="85" fill="#d1d5db">ID           MODIFIED         CWD                      TITLE</text>
+<text x="24" y="108" fill="#d1d5db">------------ ---------------- ------------------------ ------------------------------</text>
+<text x="24" y="131" fill="#d1d5db">019f1000-aa1 2026-06-22 15:21 …/git/app-service       Fix retry handling in API client</text>
+<text x="24" y="154" fill="#d1d5db">019f0fff-9bb 2026-06-22 14:58 …/git/firmware         Review boot flow PR comments</text>
+<text x="24" y="177" fill="#d1d5db">019f0eee-812 2026-06-21 18:42 …/workspace/docs       RPMI telemetry design notes</text>
+<text x="24" y="200" fill="#d1d5db">019f0ddd-701 2026-06-20 09:17 …/git/kernel           Compare branch against upstream main</text>
+<text x="24" y="223" fill="#d1d5db">019f0ccc-6a0 2026-06-18 16:29 …/workspace/files      Summarize architecture PDFs</text>
+<text x="24" y="246" fill="#d1d5db">019f0bbb-591 2026-06-17 10:15 …/git/reviewer         Draft review_comments.md</text>
+</g>
+</svg>

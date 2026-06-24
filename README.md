@@ -242,6 +242,8 @@ Outside tmux, it creates a new tmux session with one window and two panes.
 - `c`: clear search filter
 - `R`: refresh cached session list
 - `q`: close the sidebar pane
+- tmux prefix + `Left`: focus the sidebar pane from the Codex pane
+- tmux prefix + `Right`: focus the Codex pane from the sidebar pane
 
 The sidebar caches the session list for fast arrow-key navigation. It reloads only on
 search, clear, rename, delete, or manual refresh.
@@ -283,6 +285,7 @@ Choose working directory to resume this session
 
 After selecting a session from the sidebar, focus should automatically move to the
 right pane. Press `Enter` to accept the default, or choose the desired option there.
+Use tmux prefix + `Left` to return to the sidebar pane.
 
 ## Safety Model
 

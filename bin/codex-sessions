@@ -593,6 +593,10 @@ Sidebar keys:
   c             : clear search
   q             : close sidebar
 
+Tmux pane keys:
+  prefix + Left : focus sidebar pane
+  prefix + Right: focus Codex pane
+
 Select a session from the left pane to start.
 CODEX_SESSIONS_HELP
 exec "${SHELL:-/bin/bash}" -l"""
@@ -609,6 +613,9 @@ def print_right_pane_help() -> None:
         "  /             : search\n"
         "  c             : clear search\n"
         "  q             : close sidebar\n\n"
+        "Tmux pane keys:\n"
+        "  prefix + Left : focus sidebar pane\n"
+        "  prefix + Right: focus Codex pane\n\n"
         "Select a session from the left pane to start.\n",
         flush=True,
     )

@@ -10,7 +10,7 @@ Usage:
 
 Options:
   --prefix DIR   Install prefix. Default: ~/.local
-  --aliases      Append cs/cxs aliases to the detected shell rc file
+  --aliases      Append cs/cxs aliases to the detected running shell rc file
   --shell FILE   Shell rc file to update when --aliases is used
   -h, --help     Show this help
 
@@ -24,6 +24,7 @@ USAGE
 prefix="$HOME/.local"
 add_aliases=0
 shell_rc=""
+alias_status="not requested"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,6 +54,47 @@ done
 
 src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+shell_quote() {
+  printf '%q' "$1"
+}
+
+detect_running_shell() {
+  local shell_name=""
+  if command -v ps >/dev/null 2>&1 && [[ -n "${PPID:-}" ]]; then
+    shell_name="$(ps -p "$PPID" -o comm= 2>/dev/null || true)"
+  fi
+  shell_name="${shell_name#"${shell_name%%[![:space:]]*}"}"
+  shell_name="${shell_name%"${shell_name##*[![:space:]]}"}"
+  shell_name="${shell_name#-}"
+  shell_name="${shell_name##*/}"
+  if [[ -z "$shell_name" ]]; then
+    local login_shell="${SHELL:-}"
+    login_shell="${login_shell##*/}"
+    if [[ -n "$login_shell" ]]; then
+      shell_name="$login_shell"
+    fi
+  fi
+  printf '%s' "$shell_name"
+}
+
+default_shell_rc() {
+  local shell_name="$1"
+  case "$shell_name" in
+    zsh) printf '%s/.zshrc' "$HOME" ;;
+    bash) printf '%s/.bashrc' "$HOME" ;;
+    sh|dash|ksh) printf '%s/.profile' "$HOME" ;;
+    *) printf '%s/.profile' "$HOME" ;;
+  esac
+}
+
+source_command_for() {
+  local rc_file="$1"
+  case "${rc_file##*/}" in
+    .zshrc|.bashrc) printf 'source %s' "$(shell_quote "$rc_file")" ;;
+    *) printf '. %s' "$(shell_quote "$rc_file")" ;;
+  esac
+}
+
 missing=0
 for cmd in python3 install; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -62,12 +104,12 @@ for cmd in python3 install; do
 done
 if ! python3 - <<'PY_CHECK' >/dev/null 2>&1
 import sys
-if sys.version_info < (3, 8):
-    raise SystemExit("python 3.8+ required")
+if sys.version_info < (3, 7):
+    raise SystemExit("python 3.7+ required")
 import argparse, curses, dataclasses, json, pathlib, subprocess
 PY_CHECK
 then
-  echo "python3 is present, but Python 3.8+ and required stdlib modules are needed; on some distros install python3-curses" >&2
+  echo "python3 is present, but Python 3.7+ and required stdlib modules are needed; on some distros install python3-curses" >&2
   missing=1
 fi
 if [[ "$missing" -ne 0 ]]; then
@@ -84,21 +126,12 @@ install_bin="$prefix/bin"
 mkdir -p "$install_bin"
 install -m 0755 "$src_dir/bin/codex-sessions" "$install_bin/codex-sessions"
 
-cat <<MSG
-Installed codex-sessions to:
-  $install_bin/codex-sessions
-
-Ensure this is in PATH:
-  export PATH="$install_bin:\$PATH"
-MSG
-
 if [[ "$add_aliases" -eq 1 ]]; then
   if [[ -z "$shell_rc" ]]; then
-    case "${SHELL:-}" in
-      */zsh) shell_rc="$HOME/.zshrc" ;;
-      */bash) shell_rc="$HOME/.bashrc" ;;
-      *) shell_rc="$HOME/.profile" ;;
-    esac
+    detected_shell="$(detect_running_shell)"
+    shell_rc="$(default_shell_rc "$detected_shell")"
+  else
+    detected_shell="custom"
   fi
   mkdir -p "$(dirname "$shell_rc")"
   touch "$shell_rc"
@@ -109,9 +142,9 @@ if [[ "$add_aliases" -eq 1 ]]; then
 alias cs='$install_bin/codex-sessions '
 alias cxs='$install_bin/codex-sessions '
 ALIASES
-    echo "Added cs/cxs aliases to $shell_rc"
+    alias_status="added to $shell_rc"
   else
-    echo "Aliases marker already exists in $shell_rc; leaving it unchanged"
+    alias_status="already present in $shell_rc"
   fi
 fi
 
@@ -119,4 +152,28 @@ python3 -m py_compile "$install_bin/codex-sessions"
 rm -rf "$install_bin/__pycache__"
 "$install_bin/codex-sessions" --help >/dev/null
 
-echo "Install check passed. Try: codex-sessions list -n 10"
+cat <<MSG
+Installed codex-sessions to:
+  $install_bin/codex-sessions
+
+Install check passed.
+Aliases: $alias_status
+
+Quick start:
+  export PATH="$install_bin:\$PATH"
+MSG
+
+if [[ "$add_aliases" -eq 1 ]]; then
+  cat <<MSG
+  $(source_command_for "$shell_rc")
+  cs doctor
+  cs list -n 10
+  cs tmux
+MSG
+else
+  cat <<'MSG'
+  codex-sessions doctor
+  codex-sessions list -n 10
+  codex-sessions tmux
+MSG
+fi

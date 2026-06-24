@@ -35,7 +35,7 @@ The screenshots below use representative session data and do not expose real tea
 Required for core commands (`paths`, `list`, `rename`, `delete`):
 
 - Linux/macOS shell environment
-- Python 3.8+
+- Python 3.7+
 - Python stdlib modules: `argparse`, `curses`, `dataclasses`, `datetime`, `glob`, `json`, `os`, `pathlib`, `re`, `shutil`, `subprocess`, `time`
   - Note: on some Linux distributions, `curses` is packaged separately as `python3-curses`.
 - Existing Codex session files under one of:
@@ -77,7 +77,7 @@ From this folder:
 
 ```bash
 ./install.sh --aliases
-source ~/.zshrc   # or source ~/.bashrc, depending on your shell
+# Follow the printed "Quick start" commands to reload aliases for this shell.
 cs doctor
 cs list -n 10
 cs tmux
@@ -121,9 +121,7 @@ Install and add `cs`/`cxs` aliases:
 
 ```bash
 ./install.sh --aliases
-source ~/.zshrc   # zsh
-# or
-source ~/.bashrc  # bash
+# The installer detects the running shell rc file and prints the exact reload command.
 ```
 
 Install to a custom prefix:
@@ -147,11 +145,14 @@ alias cs='/path/to/codex-sessions '
 alias cxs='/path/to/codex-sessions '
 ```
 
-`./install.sh --aliases` appends those aliases to the detected shell rc file:
+`./install.sh --aliases` appends those aliases to the detected running shell rc file:
 
 - zsh: `~/.zshrc`
 - bash: `~/.bashrc`
 - fallback: `~/.profile`
+
+The installer cannot modify the already-running parent shell directly, so it prints
+the exact command to activate aliases immediately, such as `source ~/.zshrc`.
 
 If a teammate does not want rc-file changes, use one of these instead:
 
@@ -322,7 +323,7 @@ Environment variables:
 
 ## Validation Status
 
-This package was smoke-tested in a clean Docker container based on Ubuntu with Python 3.8.10, no `tmux`, and no real Codex installed. Validated paths:
+This package was smoke-tested in a clean Docker container based on Ubuntu with Python 3.8.10, no `tmux`, and no real Codex installed. The script is kept Python 3.7-compatible for older hosts. Validated paths:
 
 - `install.sh --prefix ... --aliases --shell ...`
 - `codex-sessions doctor` with missing optional `codex`/`tmux` warnings
@@ -395,7 +396,7 @@ Recommended options:
    tar -xzf codex-session-tools.tar.gz
    cd codex-session-tools
    ./install.sh --aliases
-   source ~/.zshrc
+   # Follow the printed "Quick start" commands.
    cs tmux
    ```
 

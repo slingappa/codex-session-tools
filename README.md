@@ -246,6 +246,31 @@ Outside tmux, it creates a new tmux session with one window and two panes.
 The sidebar caches the session list for fast arrow-key navigation. It reloads only on
 search, clear, rename, delete, or manual refresh.
 
+## Optional tmux Configuration
+
+The tool does not require custom tmux settings, and the installer does not edit
+`~/.tmux.conf`. If you want mouse selection, copy-on-drag, and quick pane switching,
+add a local tmux snippet such as:
+
+```tmux
+set -g mouse on
+
+# Copy selected text to the X clipboard when mouse drag selection ends.
+# Requires xclip on Linux/X11 systems.
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "xclip -se c -i"
+bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "xclip -se c -i"
+
+# Shift-left/right pane switching. Terminal support for these keys may vary.
+bind -n S-Right select-pane -t :.+
+bind -n S-Left select-pane -t :.-
+```
+
+Reload tmux configuration after editing:
+
+```bash
+tmux source-file ~/.tmux.conf
+```
+
 ## Working Directory Prompt
 
 Codex may ask:

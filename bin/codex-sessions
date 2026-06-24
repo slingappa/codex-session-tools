@@ -580,8 +580,24 @@ def run_tmux(args: Sequence[str], dry_run: bool = False) -> subprocess.Completed
     return subprocess.run(command, text=True, check=True, capture_output=True)
 
 
+def tmux_prefix_key(default: str = "prefix") -> str:
+    try:
+        result = subprocess.run(
+            ["tmux", "show-option", "-gqv", "prefix"],
+            text=True,
+            check=False,
+            capture_output=True,
+        )
+    except Exception:
+        return default
+    prefix = result.stdout.strip()
+    return prefix or default
+
+
 def right_pane_help_command() -> str:
-    return """cat <<'CODEX_SESSIONS_HELP'
+    return """prefix="$(tmux show-option -gqv prefix 2>/dev/null || true)"
+[ -n "$prefix" ] || prefix="prefix"
+cat <<CODEX_SESSIONS_HELP
 Codex Sessions tmux workspace
 
 Sidebar keys:
@@ -594,8 +610,8 @@ Sidebar keys:
   q             : close sidebar
 
 Tmux pane keys:
-  prefix + Left : focus sidebar pane
-  prefix + Right: focus Codex pane
+  ${prefix} + Left : focus sidebar pane
+  ${prefix} + Right: focus Codex pane
 
 Select a session from the left pane to start.
 CODEX_SESSIONS_HELP
@@ -603,6 +619,7 @@ exec "${SHELL:-/bin/bash}" -l"""
 
 
 def print_right_pane_help() -> None:
+    prefix = tmux_prefix_key()
     print(
         "Codex Sessions tmux workspace\n\n"
         "Sidebar keys:\n"
@@ -614,8 +631,8 @@ def print_right_pane_help() -> None:
         "  c             : clear search\n"
         "  q             : close sidebar\n\n"
         "Tmux pane keys:\n"
-        "  prefix + Left : focus sidebar pane\n"
-        "  prefix + Right: focus Codex pane\n\n"
+        f"  {prefix} + Left : focus sidebar pane\n"
+        f"  {prefix} + Right: focus Codex pane\n\n"
         "Select a session from the left pane to start.\n",
         flush=True,
     )

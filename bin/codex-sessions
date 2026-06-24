@@ -614,13 +614,23 @@ def print_right_pane_help() -> None:
     )
 
 
-def sidebar_shell_command(script: str, right_pane: str, codex_bin: str) -> str:
+def sidebar_shell_command(
+    script: str, right_pane: str, codex_bin: str, python_bin: str, config: Config
+) -> str:
     return (
         "log=/tmp/codex-sessions-sidebar-${TMUX_PANE#%}.log; "
         "while [ \"$(tmux display-message -p -t "
         + shell_quote(right_pane)
         + " '#{session_attached}' 2>/dev/null)\" = \"0\" ]; do sleep 0.1; done; exec "
+        + shell_quote(python_bin)
+        + " "
         + shell_quote(script)
+        + " --agent-home "
+        + shell_quote(str(config.agent_home))
+        + " --sessions-root "
+        + shell_quote(str(config.sessions_root))
+        + " --state-root "
+        + shell_quote(str(config.state_root))
         + " sidebar --target-pane "
         + shell_quote(right_pane)
         + " --codex-bin "
@@ -631,7 +641,9 @@ def sidebar_shell_command(script: str, right_pane: str, codex_bin: str) -> str:
 
 def command_tmux(args: argparse.Namespace) -> int:
     ensure_tmux()
+    config = build_config(args)
     script = str(Path(__file__).resolve())
+    python_bin = sys.executable or "python3"
     session_name = args.name
     width = str(args.width)
     placeholder = right_pane_help_command()
@@ -648,7 +660,7 @@ def command_tmux(args: argparse.Namespace) -> int:
             check=True,
             capture_output=True,
         ).stdout.strip()
-        sidebar_cmd = sidebar_shell_command(script, right_pane, args.codex_bin)
+        sidebar_cmd = sidebar_shell_command(script, right_pane, args.codex_bin, python_bin, config)
         if args.dry_run:
             print(f"# inside tmux: split current window; target right pane is {right_pane}")
             run_tmux(["split-window", "-h", "-b", "-l", width, "-t", right_pane, sidebar_cmd], True)
@@ -668,7 +680,7 @@ def command_tmux(args: argparse.Namespace) -> int:
         check=True,
         capture_output=True,
     ).stdout.strip()
-    sidebar_cmd = sidebar_shell_command(script, right_pane, args.codex_bin)
+    sidebar_cmd = sidebar_shell_command(script, right_pane, args.codex_bin, python_bin, config)
     run_tmux(["split-window", "-h", "-b", "-l", width, "-t", right_pane, sidebar_cmd])
     run_tmux(["select-pane", "-t", right_pane])
     if args.no_attach:

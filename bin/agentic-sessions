@@ -1229,6 +1229,59 @@ def sidebar_line(session: Session, width: int, selected: bool) -> str:
     return f"{marker} {age} {custom}{shorten(session.title, title_width)}"
 
 
+def safe_color_pair(pair_number: int, fallback: int = curses.A_NORMAL) -> int:
+    try:
+        return curses.color_pair(pair_number)
+    except curses.error:
+        return fallback
+
+
+def sidebar_attrs() -> dict:
+    attrs = {
+        "header": curses.A_REVERSE,
+        "help": curses.A_DIM,
+        "row": curses.A_NORMAL,
+        "selected": curses.A_REVERSE | curses.A_BOLD,
+        "footer": curses.A_DIM,
+        "message": curses.A_REVERSE,
+    }
+    if not curses.has_colors():
+        return attrs
+    try:
+        curses.start_color()
+        try:
+            curses.use_default_colors()
+            default_bg = -1
+        except curses.error:
+            default_bg = curses.COLOR_BLACK
+        if curses.COLORS >= 256:
+            accent = 173
+            accent_soft = 180
+            muted = 245
+            selected_fg = 235
+            curses.init_pair(1, accent, default_bg)
+            curses.init_pair(2, selected_fg, accent_soft)
+            curses.init_pair(3, muted, default_bg)
+            curses.init_pair(4, accent_soft, default_bg)
+        else:
+            curses.init_pair(1, curses.COLOR_YELLOW, default_bg)
+            curses.init_pair(2, curses.COLOR_WHITE, default_bg)
+            curses.init_pair(3, curses.COLOR_WHITE, default_bg)
+            curses.init_pair(4, curses.COLOR_YELLOW, default_bg)
+    except curses.error:
+        return attrs
+    attrs.update(
+        {
+            "header": safe_color_pair(1, curses.A_REVERSE) | curses.A_BOLD,
+            "help": safe_color_pair(3, curses.A_DIM) | curses.A_DIM,
+            "selected": safe_color_pair(2, curses.A_REVERSE) | curses.A_REVERSE | curses.A_BOLD,
+            "footer": safe_color_pair(3, curses.A_DIM) | curses.A_DIM,
+            "message": safe_color_pair(4, curses.A_REVERSE) | curses.A_BOLD,
+        }
+    )
+    return attrs
+
+
 def prompt(stdscr: curses.window, row: int, label: str, initial: str = "") -> str | None:
     curses.echo()
     curses.curs_set(1)
@@ -1270,6 +1323,7 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
     providers = [config.provider for config in configs]
     agent_bins = {provider: agent_bin_for(args, provider) for provider in providers}
     curses.curs_set(0)
+    attrs = sidebar_attrs()
     stdscr.nodelay(False)
     selected = 0
     query = ""
@@ -1296,13 +1350,13 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
         draw_width = max(1, width - 1)
         stdscr.erase()
         header = f" {providers_title(providers)} Sessions " + (f"/{query}" if query else "")
-        stdscr.addnstr(0, 0, header.ljust(draw_width), draw_width, curses.A_REVERSE)
+        stdscr.addnstr(0, 0, header.ljust(draw_width), draw_width, attrs["header"])
         help_row = 1
         list_start = 2
         max_rows = max(0, height - 5)
         start = max(0, selected - max_rows + 1)
         visible = sessions[start : start + max_rows]
-        stdscr.addnstr(help_row, 0, shorten(help_text, draw_width).ljust(draw_width), draw_width, curses.A_DIM)
+        stdscr.addnstr(help_row, 0, shorten(help_text, draw_width).ljust(draw_width), draw_width, attrs["help"])
         for offset, session in enumerate(visible):
             absolute_index = start + offset
             path_key = str(session.path)
@@ -1320,7 +1374,7 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
                 enriched_paths.add(path_key)
             row = list_start + offset
             is_selected = absolute_index == selected
-            attr = curses.A_REVERSE if is_selected else curses.A_NORMAL
+            attr = attrs["selected"] if is_selected else attrs["row"]
             stdscr.addnstr(row, 0, sidebar_line(session, draw_width, is_selected).ljust(draw_width), draw_width, attr)
         footer_row = height - 2
         if sessions:
@@ -1331,8 +1385,8 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
             )
         else:
             detail = "no sessions"
-        stdscr.addnstr(footer_row, 0, detail.ljust(draw_width), draw_width, curses.A_DIM)
-        stdscr.addnstr(height - 1, 0, shorten(message, draw_width).ljust(draw_width), draw_width, curses.A_REVERSE)
+        stdscr.addnstr(footer_row, 0, detail.ljust(draw_width), draw_width, attrs["footer"])
+        stdscr.addnstr(height - 1, 0, shorten(message, draw_width).ljust(draw_width), draw_width, attrs["message"])
         stdscr.refresh()
         key = stdscr.getch()
         if key in (ord("q"), 27):

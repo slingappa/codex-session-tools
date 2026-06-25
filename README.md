@@ -298,6 +298,9 @@ The sidebar caches the session list for fast arrow-key navigation. It reloads on
 search, clear, rename, delete, or manual refresh.
 The runtime help prints your configured tmux prefix directly, for example
 `C-b + Left` or `C-a + Left`.
+When the terminal supports colors, the sidebar uses a muted Claude-style palette
+for the header, selected row, help, and status lines; monochrome terminals fall
+back to plain reverse/dim text.
 When `Enter` switches sessions, the previously running right-pane agent is left as
 a suspended shell job rather than killed; run `jobs` or `fg` in that pane if you
 need to inspect or return to it.

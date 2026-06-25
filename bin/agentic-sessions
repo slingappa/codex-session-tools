@@ -180,6 +180,10 @@ def default_agent_home(provider: str = "codex") -> Path:
     if os.environ.get("CODEX_HOME"):
         codex_home = expand(os.environ["CODEX_HOME"])
         candidates.extend([codex_home, codex_home / "agent"])
+    if os.environ.get("QGENIE_CLI_HOME"):
+        qgenie_home = expand(os.environ["QGENIE_CLI_HOME"])
+        candidates.extend([qgenie_home / "agent", qgenie_home])
+    candidates.append(expand("~/.config/qgenie-cli/agent"))
     candidates.append(expand("~/.codex"))
     candidates.append(expand("~/.config/codex"))
     for candidate in candidates:
@@ -295,7 +299,9 @@ def extract_text_from_message(payload: dict) -> str:
     return "\n".join(texts).strip()
 
 
-def parse_codex_session(path: Path, names: dict, scan_all_prompts: bool = False) -> Session | None:
+def parse_codex_session(
+    path: Path, names: dict, scan_all_prompts: bool = False, fast_sidebar: bool = False
+) -> Session | None:
     meta: dict = {}
     first_prompt = ""
     last_prompt = ""
@@ -306,7 +312,9 @@ def parse_codex_session(path: Path, names: dict, scan_all_prompts: bool = False)
 
     try:
         with path.open(errors="replace") as handle:
-            for raw in handle:
+            total_bytes = 0
+            for line_number, raw in enumerate(handle, start=1):
+                total_bytes += len(raw)
                 try:
                     record = json.loads(raw)
                 except Exception:
@@ -328,6 +336,8 @@ def parse_codex_session(path: Path, names: dict, scan_all_prompts: bool = False)
                 if preview:
                     last_prompt = preview
                 if first_prompt and not scan_all_prompts:
+                    break
+                if fast_sidebar and meta and (line_number >= 200 or total_bytes >= 131072):
                     break
     except OSError:
         return None
@@ -357,7 +367,9 @@ def parse_codex_session(path: Path, names: dict, scan_all_prompts: bool = False)
     )
 
 
-def parse_claude_session(path: Path, names: dict, scan_all_prompts: bool = False) -> Session | None:
+def parse_claude_session(
+    path: Path, names: dict, scan_all_prompts: bool = False, fast_sidebar: bool = False
+) -> Session | None:
     first_prompt = ""
     last_prompt = ""
     session_id = ""
@@ -371,7 +383,9 @@ def parse_claude_session(path: Path, names: dict, scan_all_prompts: bool = False
 
     try:
         with path.open(errors="replace") as handle:
-            for raw in handle:
+            total_bytes = 0
+            for line_number, raw in enumerate(handle, start=1):
+                total_bytes += len(raw)
                 try:
                     record = json.loads(raw)
                 except Exception:
@@ -404,6 +418,8 @@ def parse_claude_session(path: Path, names: dict, scan_all_prompts: bool = False
                     last_prompt = preview
                 if first_prompt and not scan_all_prompts:
                     break
+                if fast_sidebar and session_id and (line_number >= 200 or total_bytes >= 131072):
+                    break
     except OSError:
         return None
 
@@ -431,19 +447,29 @@ def parse_claude_session(path: Path, names: dict, scan_all_prompts: bool = False
     )
 
 
-def parse_session(path: Path, names: dict, provider: str, scan_all_prompts: bool = False) -> Session | None:
+def parse_session(
+    path: Path, names: dict, provider: str, scan_all_prompts: bool = False, fast_sidebar: bool = False
+) -> Session | None:
     if provider == "claude":
-        return parse_claude_session(path, names, scan_all_prompts=scan_all_prompts)
-    return parse_codex_session(path, names, scan_all_prompts=scan_all_prompts)
+        return parse_claude_session(path, names, scan_all_prompts=scan_all_prompts, fast_sidebar=fast_sidebar)
+    return parse_codex_session(path, names, scan_all_prompts=scan_all_prompts, fast_sidebar=fast_sidebar)
 
 
-def load_sessions(config: Config, query: str = "", limit: int = 0, scan_all_prompts: bool = False) -> list[Session]:
+def load_sessions(
+    config: Config,
+    query: str = "",
+    limit: int = 0,
+    scan_all_prompts: bool = False,
+    fast_sidebar: bool = False,
+) -> list[Session]:
     names = load_json_object(config.names_file)
     files = session_files(config)
     sessions: list[Session] = []
     seen_ids: set[str] = set()
     for path in files:
-        session = parse_session(path, names, config.provider, scan_all_prompts=scan_all_prompts)
+        session = parse_session(
+            path, names, config.provider, scan_all_prompts=scan_all_prompts, fast_sidebar=fast_sidebar
+        )
         if not session or session.id in seen_ids:
             continue
         seen_ids.add(session.id)
@@ -458,12 +484,14 @@ def load_sessions(config: Config, query: str = "", limit: int = 0, scan_all_prom
 
 
 def load_sessions_from_configs(
-    configs: Sequence[Config], query: str = "", limit: int = 0, scan_all_prompts: bool = False
+    configs: Sequence[Config], query: str = "", limit: int = 0, scan_all_prompts: bool = False, fast_sidebar: bool = False
 ) -> list[Session]:
     sessions: list[Session] = []
     for config in configs:
         sessions.extend(
-            load_sessions(config, query, limit=limit, scan_all_prompts=scan_all_prompts)
+            load_sessions(
+                config, query, limit=limit, scan_all_prompts=scan_all_prompts, fast_sidebar=fast_sidebar
+            )
         )
     sessions.sort(key=lambda session: session.modified, reverse=True)
     if limit:
@@ -476,6 +504,60 @@ def session_files(config: Config) -> list[Path]:
     files = [Path(p) for p in glob.glob(str(config.sessions_root / "**" / pattern), recursive=True)]
     files.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
     return files
+
+
+def session_id_from_path(path: Path) -> str:
+    match = UUID_RE.search(path.name)
+    return match.group(0).lower() if match else ""
+
+
+def light_session_from_path(config: Config, path: Path, names: dict) -> Session | None:
+    session_id = session_id_from_path(path)
+    if not session_id:
+        return None
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        modified = 0
+    return Session(
+        provider=config.provider,
+        id=session_id,
+        path=path,
+        timestamp="",
+        modified=modified,
+        cwd="",
+        source="",
+        model_provider="",
+        cli_version="",
+        first_prompt="",
+        last_prompt="",
+        custom_title=custom_title_for(names, config.provider, session_id),
+    )
+
+
+def load_session_index(config: Config, query: str = "", limit: int = 0) -> list[Session]:
+    names = load_json_object(config.names_file)
+    sessions: list[Session] = []
+    for path in session_files(config):
+        session = light_session_from_path(config, path, names)
+        if not session:
+            continue
+        if query and query.lower() not in session_haystack(session):
+            continue
+        sessions.append(session)
+        if limit and len(sessions) >= limit:
+            break
+    return sessions
+
+
+def load_session_index_from_configs(configs: Sequence[Config], query: str = "", limit: int = 0) -> list[Session]:
+    sessions: list[Session] = []
+    for config in configs:
+        sessions.extend(load_session_index(config, query, limit=limit))
+    sessions.sort(key=lambda session: session.modified, reverse=True)
+    if limit:
+        return sessions[:limit]
+    return sessions
 
 
 def looks_like_id_fragment(selector: str) -> bool:
@@ -1059,10 +1141,14 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
     help_text = f"{providers_title(providers)} ↑↓/j/k move Enter resume r rename d trash / search c clear R refresh q quit"
     message = help_text
     sessions: list[Session] = []
+    names_by_provider: dict[str, dict] = {}
+    enriched_paths: set[str] = set()
     needs_reload = True
     while True:
         if needs_reload:
-            sessions = load_sessions_from_configs(configs, query, limit=args.limit)
+            sessions = load_session_index_from_configs(configs, query, limit=args.limit)
+            names_by_provider = {config.provider: load_json_object(config.names_file) for config in configs}
+            enriched_paths = set()
             needs_reload = False
             message = f"loaded {len(sessions)} sessions" if sessions else "no sessions found"
             if sessions:
@@ -1081,14 +1167,31 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
         visible = sessions[start : start + max_rows]
         stdscr.addnstr(help_row, 0, shorten(help_text, draw_width).ljust(draw_width), draw_width, curses.A_DIM)
         for offset, session in enumerate(visible):
+            absolute_index = start + offset
+            path_key = str(session.path)
+            if path_key not in enriched_paths:
+                config = config_for_provider(configs, session.provider)
+                parsed = parse_session(
+                    session.path,
+                    names_by_provider.get(session.provider, {}),
+                    session.provider,
+                    fast_sidebar=True,
+                )
+                if parsed:
+                    session = parsed
+                    sessions[absolute_index] = parsed
+                enriched_paths.add(path_key)
             row = list_start + offset
-            is_selected = start + offset == selected
+            is_selected = absolute_index == selected
             attr = curses.A_REVERSE if is_selected else curses.A_NORMAL
             stdscr.addnstr(row, 0, sidebar_line(session, draw_width, is_selected).ljust(draw_width), draw_width, attr)
         footer_row = height - 2
         if sessions:
             current = sessions[selected]
-            detail = f"{current.provider}:{current.id[:12]} {short_cwd(current.cwd, max(10, width - 24))}"
+            detail = (
+                f"{selected + 1}/{len(sessions)} {current.provider}:{current.id[:12]} "
+                f"{short_cwd(current.cwd, max(10, width - 34))}"
+            )
         else:
             detail = "no sessions"
         stdscr.addnstr(footer_row, 0, detail.ljust(draw_width), draw_width, curses.A_DIM)
@@ -1161,7 +1264,7 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
 def command_sidebar(args: argparse.Namespace) -> int:
     if args.render_once:
         configs = build_configs(args)
-        print_sessions(load_sessions_from_configs(configs, limit=args.limit))
+        print_sessions(load_session_index_from_configs(configs, limit=args.limit))
         return 0
     if not args.target_pane:
         raise SystemExit("sidebar requires --target-pane")
@@ -1261,7 +1364,7 @@ def build_parser() -> argparse.ArgumentParser:
     kill_group.add_argument("--kill-running", dest="kill_running", action="store_true", default=True)
     kill_group.add_argument("--no-kill-running", dest="kill_running", action="store_false")
     p.add_argument("--render-once", action="store_true")
-    p.add_argument("--limit", type=int, default=200)
+    p.add_argument("--limit", type=int, default=0)
     p.set_defaults(func=command_sidebar)
 
     return parser

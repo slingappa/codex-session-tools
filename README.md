@@ -292,6 +292,9 @@ search, clear, rename, delete, or manual refresh.
 The runtime help prints your configured tmux prefix directly, for example
 `C-b + Left` or `C-a + Left`.
 
+The sidebar indexes all matching session files by default, not just the first page.
+Visible rows are enriched with prompt/CWD details as you scroll.
+
 ## Optional tmux Configuration
 
 The tool does not require custom tmux settings, and the installer does not edit

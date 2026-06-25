@@ -16,7 +16,9 @@ The tool is intentionally dependency-light: Python 3 stdlib plus `tmux` for side
 
 ## Screenshots
 
-The screenshots below use representative session data and do not expose real team session contents.
+The screenshots below use representative session data and show the current
+provider-aware list plus boxed tmux sidebar; they do not expose real team session
+contents.
 
 ### Dependency Check
 
@@ -36,7 +38,9 @@ Required for core commands (`paths`, `list`, `rename`, `delete`):
 
 - Linux/macOS shell environment
 - Python 3.7+
-- Python stdlib modules: `argparse`, `curses`, `dataclasses`, `datetime`, `glob`, `json`, `os`, `pathlib`, `re`, `shutil`, `subprocess`, `time`
+- Python stdlib modules: `argparse`, `curses`, `dataclasses`, `datetime`,
+  `functools`, `json`, `os`, `pathlib`, `re`, `shutil`, `subprocess`, `time`,
+  `textwrap`
   - Note: on some Linux distributions, `curses` is packaged separately as `python3-curses`.
 - Existing Codex session files under one of:
   - `$CODEX_HOME/sessions`

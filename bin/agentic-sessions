@@ -377,6 +377,7 @@ def parse_claude_session(
     cwd = ""
     cli_version = ""
     model_provider = ""
+    entrypoint = ""
     match = UUID_RE.search(path.name)
     if match:
         session_id = match.group(0).lower()
@@ -398,6 +399,8 @@ def parse_claude_session(
                     cwd = str(record.get("cwd"))
                 if not cli_version and record.get("version"):
                     cli_version = str(record.get("version"))
+                if not entrypoint and record.get("entrypoint"):
+                    entrypoint = str(record.get("entrypoint"))
 
                 message = record.get("message")
                 if isinstance(message, dict) and not model_provider and message.get("model"):
@@ -438,7 +441,7 @@ def parse_claude_session(
         timestamp=timestamp,
         modified=modified,
         cwd=cwd,
-        source="claude-code",
+        source=entrypoint or "claude-code",
         model_provider=model_provider,
         cli_version=cli_version,
         first_prompt=first_prompt,
@@ -455,18 +458,93 @@ def parse_session(
     return parse_codex_session(path, names, scan_all_prompts=scan_all_prompts, fast_sidebar=fast_sidebar)
 
 
+def codex_session_meta_from_path(path: Path) -> dict:
+    try:
+        with path.open(errors="replace") as handle:
+            for line_number, raw in enumerate(handle, start=1):
+                if line_number > 20:
+                    break
+                try:
+                    record = json.loads(raw)
+                except Exception:
+                    continue
+                payload = record.get("payload") or {}
+                if record.get("type") == "session_meta" and isinstance(payload, dict):
+                    return payload
+    except OSError:
+        pass
+    return {}
+
+
+def codex_is_root_session_meta(meta: dict) -> bool:
+    return meta.get("source") == "cli"
+
+
+def claude_session_summary_from_path(path: Path) -> dict:
+    summary: dict = {}
+    try:
+        with path.open(errors="replace") as handle:
+            for line_number, raw in enumerate(handle, start=1):
+                if line_number > 40:
+                    break
+                try:
+                    record = json.loads(raw)
+                except Exception:
+                    continue
+                if not summary.get("session_id") and record.get("sessionId"):
+                    summary["session_id"] = str(record.get("sessionId")).lower()
+                if not summary.get("timestamp") and record.get("timestamp"):
+                    summary["timestamp"] = str(record.get("timestamp"))
+                if not summary.get("cwd") and record.get("cwd"):
+                    summary["cwd"] = str(record.get("cwd"))
+                if not summary.get("cli_version") and record.get("version"):
+                    summary["cli_version"] = str(record.get("version"))
+                if not summary.get("source") and record.get("entrypoint"):
+                    summary["source"] = str(record.get("entrypoint"))
+                if record.get("isSidechain") is True:
+                    summary["sidechain"] = True
+                message = record.get("message")
+                if isinstance(message, dict) and not summary.get("model_provider") and message.get("model"):
+                    summary["model_provider"] = str(message.get("model"))
+                if summary.get("source") and summary.get("cwd") and summary.get("timestamp"):
+                    break
+    except OSError:
+        pass
+    return summary
+
+
+def claude_is_root_session_summary(summary: dict) -> bool:
+    if summary.get("sidechain"):
+        return False
+    source = str(summary.get("source") or "")
+    return not source or source == "cli"
+
+
+def include_session_path(config: Config, path: Path, include_generated: bool = False) -> bool:
+    if include_generated:
+        return True
+    if config.provider == "codex":
+        return codex_is_root_session_meta(codex_session_meta_from_path(path))
+    if config.provider == "claude":
+        return claude_is_root_session_summary(claude_session_summary_from_path(path))
+    return True
+
+
 def load_sessions(
     config: Config,
     query: str = "",
     limit: int = 0,
     scan_all_prompts: bool = False,
     fast_sidebar: bool = False,
+    include_generated: bool = False,
 ) -> list[Session]:
     names = load_json_object(config.names_file)
     files = session_files(config)
     sessions: list[Session] = []
     seen_ids: set[str] = set()
     for path in files:
+        if not include_session_path(config, path, include_generated=include_generated):
+            continue
         session = parse_session(
             path, names, config.provider, scan_all_prompts=scan_all_prompts, fast_sidebar=fast_sidebar
         )
@@ -484,13 +562,23 @@ def load_sessions(
 
 
 def load_sessions_from_configs(
-    configs: Sequence[Config], query: str = "", limit: int = 0, scan_all_prompts: bool = False, fast_sidebar: bool = False
+    configs: Sequence[Config],
+    query: str = "",
+    limit: int = 0,
+    scan_all_prompts: bool = False,
+    fast_sidebar: bool = False,
+    include_generated: bool = False,
 ) -> list[Session]:
     sessions: list[Session] = []
     for config in configs:
         sessions.extend(
             load_sessions(
-                config, query, limit=limit, scan_all_prompts=scan_all_prompts, fast_sidebar=fast_sidebar
+                config,
+                query,
+                limit=limit,
+                scan_all_prompts=scan_all_prompts,
+                fast_sidebar=fast_sidebar,
+                include_generated=include_generated,
             )
         )
     sessions.sort(key=lambda session: session.modified, reverse=True)
@@ -515,6 +603,13 @@ def light_session_from_path(config: Config, path: Path, names: dict) -> Session 
     session_id = session_id_from_path(path)
     if not session_id:
         return None
+    meta: dict = {}
+    if config.provider == "codex":
+        meta = codex_session_meta_from_path(path)
+        session_id = str(meta.get("id") or session_id).lower()
+    elif config.provider == "claude":
+        meta = claude_session_summary_from_path(path)
+        session_id = str(meta.get("session_id") or session_id).lower()
     try:
         modified = path.stat().st_mtime
     except OSError:
@@ -523,22 +618,24 @@ def light_session_from_path(config: Config, path: Path, names: dict) -> Session 
         provider=config.provider,
         id=session_id,
         path=path,
-        timestamp="",
+        timestamp=str(meta.get("timestamp") or ""),
         modified=modified,
-        cwd="",
-        source="",
-        model_provider="",
-        cli_version="",
+        cwd=str(meta.get("cwd") or ""),
+        source=str(meta.get("source") or ""),
+        model_provider=str(meta.get("model_provider") or ""),
+        cli_version=str(meta.get("cli_version") or ""),
         first_prompt="",
         last_prompt="",
         custom_title=custom_title_for(names, config.provider, session_id),
     )
 
 
-def load_session_index(config: Config, query: str = "", limit: int = 0) -> list[Session]:
+def load_session_index(config: Config, query: str = "", limit: int = 0, include_generated: bool = False) -> list[Session]:
     names = load_json_object(config.names_file)
     sessions: list[Session] = []
     for path in session_files(config):
+        if not include_session_path(config, path, include_generated=include_generated):
+            continue
         session = light_session_from_path(config, path, names)
         if not session:
             continue
@@ -550,10 +647,12 @@ def load_session_index(config: Config, query: str = "", limit: int = 0) -> list[
     return sessions
 
 
-def load_session_index_from_configs(configs: Sequence[Config], query: str = "", limit: int = 0) -> list[Session]:
+def load_session_index_from_configs(
+    configs: Sequence[Config], query: str = "", limit: int = 0, include_generated: bool = False
+) -> list[Session]:
     sessions: list[Session] = []
     for config in configs:
-        sessions.extend(load_session_index(config, query, limit=limit))
+        sessions.extend(load_session_index(config, query, limit=limit, include_generated=include_generated))
     sessions.sort(key=lambda session: session.modified, reverse=True)
     if limit:
         return sessions[:limit]
@@ -565,24 +664,30 @@ def looks_like_id_fragment(selector: str) -> bool:
     return len(needle) >= 4 and all(char in "0123456789abcdef-" for char in needle)
 
 
-def resolve_session_selector(config: Config, selector: str, match_limit: int = 200) -> Session:
+def resolve_session_selector(
+    config: Config, selector: str, match_limit: int = 200, include_generated: bool = False
+) -> Session:
     names = load_json_object(config.names_file)
     needle = selector.strip().lower()
     if looks_like_id_fragment(needle):
         matches = [path for path in session_files(config) if needle in path.name.lower()]
         sessions = []
         for path in matches:
+            if not include_session_path(config, path, include_generated=include_generated):
+                continue
             session = parse_session(path, names, config.provider)
             if session:
                 sessions.append(session)
         if sessions:
             return resolve_session(sessions, selector)
-    return resolve_session(load_sessions(config, selector, limit=match_limit), selector)
+    return resolve_session(load_sessions(config, selector, limit=match_limit, include_generated=include_generated), selector)
 
 
-def resolve_session_selector_any(configs: Sequence[Config], selector: str, match_limit: int = 200) -> Session:
+def resolve_session_selector_any(
+    configs: Sequence[Config], selector: str, match_limit: int = 200, include_generated: bool = False
+) -> Session:
     if len(configs) == 1:
-        return resolve_session_selector(configs[0], selector, match_limit)
+        return resolve_session_selector(configs[0], selector, match_limit, include_generated=include_generated)
     sessions: list[Session] = []
     needle = selector.strip().lower()
     for config in configs:
@@ -591,11 +696,13 @@ def resolve_session_selector_any(configs: Sequence[Config], selector: str, match
             for path in session_files(config):
                 if needle not in path.name.lower():
                     continue
+                if not include_session_path(config, path, include_generated=include_generated):
+                    continue
                 session = parse_session(path, names, config.provider)
                 if session:
                     sessions.append(session)
         else:
-            sessions.extend(load_sessions(config, selector, limit=match_limit))
+            sessions.extend(load_sessions(config, selector, limit=match_limit, include_generated=include_generated))
     sessions.sort(key=lambda session: session.modified, reverse=True)
     return resolve_session(sessions[:match_limit] if match_limit else sessions, selector)
 
@@ -702,15 +809,25 @@ def resolve_session(sessions: Sequence[Session], selector: str) -> Session:
 def command_list(args: argparse.Namespace) -> int:
     configs = build_configs(args)
     sessions = load_sessions_from_configs(
-        configs, args.query or "", limit=args.limit, scan_all_prompts=args.scan_all_prompts
+        configs,
+        args.query or "",
+        limit=args.limit,
+        scan_all_prompts=args.scan_all_prompts,
+        include_generated=args.all,
     )
     print_sessions(sessions, long=args.long, json_output=args.json)
     return 0
 
 
+def include_generated_sessions(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "all", False))
+
+
 def command_rename(args: argparse.Namespace) -> int:
     configs = build_configs(args)
-    session = resolve_session_selector_any(configs, args.selector, args.match_limit)
+    session = resolve_session_selector_any(
+        configs, args.selector, args.match_limit, include_generated=include_generated_sessions(args)
+    )
     config = config_for_provider(configs, session.provider)
     names = load_json_object(config.names_file)
     key = session_name_key(session.provider, session.id)
@@ -765,7 +882,9 @@ def move_to_trash(config: Config, session: Session) -> Path:
 
 def command_delete(args: argparse.Namespace) -> int:
     configs = build_configs(args)
-    session = resolve_session_selector_any(configs, args.selector, args.match_limit)
+    session = resolve_session_selector_any(
+        configs, args.selector, args.match_limit, include_generated=include_generated_sessions(args)
+    )
     config = config_for_provider(configs, session.provider)
     if not args.yes:
         answer = input(f"Move session {session.id} ({session.title}) to trash? [y/N] ").strip().lower()
@@ -779,11 +898,16 @@ def command_delete(args: argparse.Namespace) -> int:
 
 def command_resume(args: argparse.Namespace) -> int:
     configs = build_configs(args)
-    session = resolve_session_selector_any(configs, args.selector, args.match_limit)
-    command = resume_command(session.provider, agent_bin_for(args, session.provider), session.id)
+    session = resolve_session_selector_any(
+        configs, args.selector, args.match_limit, include_generated=include_generated_sessions(args)
+    )
+    agent_bin = agent_bin_for(args, session.provider)
+    command = resume_command(session.provider, agent_bin, session.id)
     if args.print_command:
-        print(" ".join(shell_quote(part) for part in command))
+        print(resume_shell_command(session, agent_bin))
         return 0
+    if session.cwd:
+        os.chdir(session.cwd)
     os.execvp(command[0], command)
     return 127
 
@@ -917,6 +1041,13 @@ def resume_command(provider: str, agent_bin: str, session_id: str) -> list[str]:
     if provider == "claude":
         return [agent_bin, "--resume", session_id]
     return [agent_bin, "resume", session_id]
+
+
+def resume_shell_command(session: Session, agent_bin: str) -> str:
+    command = " ".join(shell_quote(part) for part in resume_command(session.provider, agent_bin, session.id))
+    if session.cwd:
+        return "cd " + shell_quote(session.cwd) + " && " + command
+    return command
 
 
 def run_tmux(args: Sequence[str], dry_run: bool = False) -> subprocess.CompletedProcess[str] | None:
@@ -1118,13 +1249,17 @@ def prompt(stdscr: curses.window, row: int, label: str, initial: str = "") -> st
     return value
 
 
+def prepare_pane_for_resume(target_pane: str, suspend_running: bool) -> None:
+    if not suspend_running:
+        return
+    subprocess.run(["tmux", "send-keys", "-t", target_pane, "C-z"], check=False)
+    time.sleep(0.35)
+
+
 def send_resume_to_pane(target_pane: str, session: Session, agent_bin: str, kill_running: bool) -> None:
-    if kill_running:
-        subprocess.run(["tmux", "send-keys", "-t", target_pane, "C-c"], check=False)
-        time.sleep(0.1)
-    command = resume_command(session.provider, agent_bin, session.id)
+    prepare_pane_for_resume(target_pane, kill_running)
     subprocess.run(
-        ["tmux", "send-keys", "-t", target_pane, " ".join(shell_quote(part) for part in command), "Enter"],
+        ["tmux", "send-keys", "-t", target_pane, resume_shell_command(session, agent_bin), "Enter"],
         check=False,
     )
     subprocess.run(["tmux", "select-pane", "-t", target_pane], check=False)
@@ -1146,7 +1281,9 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
     needs_reload = True
     while True:
         if needs_reload:
-            sessions = load_session_index_from_configs(configs, query, limit=args.limit)
+            sessions = load_session_index_from_configs(
+                configs, query, limit=args.limit, include_generated=include_generated_sessions(args)
+            )
             names_by_provider = {config.provider: load_json_object(config.names_file) for config in configs}
             enriched_paths = set()
             needs_reload = False
@@ -1264,7 +1401,9 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
 def command_sidebar(args: argparse.Namespace) -> int:
     if args.render_once:
         configs = build_configs(args)
-        print_sessions(load_session_index_from_configs(configs, limit=args.limit))
+        print_sessions(
+            load_session_index_from_configs(configs, limit=args.limit, include_generated=include_generated_sessions(args))
+        )
         return 0
     if not args.target_pane:
         raise SystemExit("sidebar requires --target-pane")
@@ -1319,6 +1458,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--long", action="store_true", help="include cwd and file path")
     p.add_argument("--json", action="store_true", help="emit JSON")
     p.add_argument("--scan-all-prompts", action="store_true", help="slower: scan full rollouts for last prompt")
+    p.add_argument("--all", action="store_true", help="include generated/background child sessions")
     p.set_defaults(func=command_list)
 
     p = sub.add_parser("rename", help="set or clear a custom session title")
@@ -1326,6 +1466,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("selector", help="session id/prefix/title fragment")
     p.add_argument("title", help="new title; pass empty string to clear")
     p.add_argument("--match-limit", type=int, default=200, help="maximum matching rows to scan")
+    p.add_argument("--all", action="store_true", help="include generated/background child sessions")
     p.set_defaults(func=command_rename)
 
     p = sub.add_parser("delete", aliases=["trash"], help="move a session file to sidecar trash")
@@ -1333,6 +1474,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("selector", help="session id/prefix/title fragment")
     p.add_argument("-y", "--yes", action="store_true", help="do not prompt")
     p.add_argument("--match-limit", type=int, default=200, help="maximum matching rows to scan")
+    p.add_argument("--all", action="store_true", help="include generated/background child sessions")
     p.set_defaults(func=command_delete)
 
     p = sub.add_parser("resume", help="exec provider resume for a selected session")
@@ -1342,6 +1484,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--claude-bin", default=default_claude_bin(), help="claude executable")
     p.add_argument("--print-command", action="store_true", help="print instead of exec")
     p.add_argument("--match-limit", type=int, default=200, help="maximum matching rows to scan")
+    p.add_argument("--all", action="store_true", help="include generated/background child sessions")
     p.set_defaults(func=command_resume)
 
     p = sub.add_parser("tmux", help="launch a tmux workspace with a sessions sidebar")
@@ -1360,11 +1503,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--target-pane", help="tmux pane id to receive codex resume commands")
     p.add_argument("--codex-bin", default=default_codex_bin(), help="codex executable")
     p.add_argument("--claude-bin", default=default_claude_bin(), help="claude executable")
-    kill_group = p.add_mutually_exclusive_group()
-    kill_group.add_argument("--kill-running", dest="kill_running", action="store_true", default=True)
-    kill_group.add_argument("--no-kill-running", dest="kill_running", action="store_false")
+    suspend_group = p.add_mutually_exclusive_group()
+    suspend_group.add_argument(
+        "--suspend-running",
+        "--kill-running",
+        dest="kill_running",
+        action="store_true",
+        default=True,
+        help="suspend the right-pane process with Ctrl-Z before sending resume",
+    )
+    suspend_group.add_argument(
+        "--no-suspend-running",
+        "--no-kill-running",
+        dest="kill_running",
+        action="store_false",
+        help="send resume without first suspending the right-pane process",
+    )
     p.add_argument("--render-once", action="store_true")
     p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--all", action="store_true", help="include generated/background child sessions")
     p.set_defaults(func=command_sidebar)
 
     return parser

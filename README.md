@@ -237,11 +237,15 @@ agentic-sessions --provider claude list -n 20
 agentic-sessions list -q rv_github
 agentic-sessions list --long
 agentic-sessions list --json
+agentic-sessions --provider codex list --all  # include generated child/background rollouts
 ```
 
 The default and explicit `--provider codex,claude` modes interleave providers by
 modified time. If the newest rows are all from one provider, increase `-n` or filter
 with `--provider codex` / `--provider claude`.
+Default views show top-level interactive sessions only so generated child,
+background, and SDK probe sessions do not flood the list; use `--all` when you
+need to inspect raw session files.
 
 Rename a session using sidecar metadata:
 
@@ -257,6 +261,9 @@ agentic-sessions resume 019eda11
 agentic-sessions resume "RPMI telemetry"
 agentic-sessions --provider claude resume 5656cd9d
 ```
+
+Claude Code resume is run from the session's saved working directory because
+Claude stores resumable conversations in project-scoped history.
 
 Trash a session JSONL file:
 
@@ -277,7 +284,7 @@ Outside tmux, it creates a new tmux session with one window and two panes.
 ## tmux Sidebar Keys
 
 - `j` / `k` or arrow keys: move selection
-- `Enter`: resume selected session in the right pane and focus that pane
+- `Enter`: suspend the current right-pane agent with `Ctrl-Z`, resume selected session, and focus that pane
 - `r`: rename selected session
 - `d`: trash selected session after typing `DELETE`
 - `/`: search/filter sessions
@@ -291,9 +298,14 @@ The sidebar caches the session list for fast arrow-key navigation. It reloads on
 search, clear, rename, delete, or manual refresh.
 The runtime help prints your configured tmux prefix directly, for example
 `C-b + Left` or `C-a + Left`.
+When `Enter` switches sessions, the previously running right-pane agent is left as
+a suspended shell job rather than killed; run `jobs` or `fg` in that pane if you
+need to inspect or return to it.
 
-The sidebar indexes all matching session files by default, not just the first page.
-Visible rows are enriched with prompt/CWD details as you scroll.
+The sidebar indexes all top-level sessions by default, not just the first page.
+Visible rows are enriched with prompt/CWD details as you scroll. Generated child,
+background, and SDK probe sessions are hidden unless you run the hidden sidebar
+command with `--all` for raw-file inspection.
 
 ## Optional tmux Configuration
 

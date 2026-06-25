@@ -1096,7 +1096,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="check local runtime dependencies")
     add_global_args(p)
-    p.add_argument("--strict", action="store_true", help="fail if optional codex/tmux dependencies are missing")
+    p.add_argument("--strict", action="store_true", help="fail if optional agent/tmux dependencies are missing")
     p.set_defaults(func=command_doctor)
 
     p = sub.add_parser("list", help="list sessions")

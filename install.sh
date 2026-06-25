@@ -6,17 +6,21 @@ usage() {
 Install agentic-session-tools for the current user.
 
 Usage:
-  ./install.sh [--prefix DIR] [--aliases] [--shell rcfile]
+  ./install.sh [--prefix DIR] [--aliases] [--shell rcfile] [--tmux FILE] [--no-tmux-mouse]
 
 Options:
   --prefix DIR   Install prefix. Default: ~/.local
   --aliases      Append ags/cs/cxs aliases to the detected running shell rc file
   --shell FILE   Shell rc file to update when --aliases is used
+  --tmux FILE    tmux config file for mouse support. Default: ~/.tmux.conf
+  --no-tmux-mouse
+                 Do not add tmux mouse support
   -h, --help     Show this help
 
 Examples:
   ./install.sh
   ./install.sh --aliases
+  ./install.sh --no-tmux-mouse
   ./install.sh --prefix ~/tools/agentic-session-tools
 USAGE
 }
@@ -25,6 +29,9 @@ prefix="$HOME/.local"
 add_aliases=0
 shell_rc=""
 alias_status="not requested"
+tmux_conf="$HOME/.tmux.conf"
+add_tmux_mouse=1
+tmux_mouse_status="not requested"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +46,14 @@ while [[ $# -gt 0 ]]; do
     --shell)
       shell_rc="${2:?missing value for --shell}"
       shift 2
+      ;;
+    --tmux)
+      tmux_conf="${2:?missing value for --tmux}"
+      shift 2
+      ;;
+    --no-tmux-mouse)
+      add_tmux_mouse=0
+      shift
       ;;
     -h|--help)
       usage
@@ -93,6 +108,12 @@ source_command_for() {
     .zshrc|.bashrc) printf 'source %s' "$(shell_quote "$rc_file")" ;;
     *) printf '. %s' "$(shell_quote "$rc_file")" ;;
   esac
+}
+
+tmux_has_mouse_setting() {
+  local config_file="$1"
+  [[ -f "$config_file" ]] || return 1
+  grep -Eq '^[[:space:]]*(set|set-option)[[:space:]]+(-g[[:space:]]+)?mouse[[:space:]]+' "$config_file"
 }
 
 missing=0
@@ -153,6 +174,23 @@ ALIASES
   fi
 fi
 
+if [[ "$add_tmux_mouse" -eq 1 ]]; then
+  mkdir -p "$(dirname "$tmux_conf")"
+  touch "$tmux_conf"
+  if tmux_has_mouse_setting "$tmux_conf"; then
+    tmux_mouse_status="already configured in $tmux_conf"
+  else
+    cat >> "$tmux_conf" <<'TMUX_MOUSE'
+
+# agentic-session-tools: allow mouse click pane selection in tmux
+set -g mouse on
+TMUX_MOUSE
+    tmux_mouse_status="added to $tmux_conf"
+  fi
+else
+  tmux_mouse_status="disabled by --no-tmux-mouse"
+fi
+
 python3 -m py_compile "$install_bin/agentic-sessions"
 rm -rf "$install_bin/__pycache__"
 "$install_bin/agentic-sessions" --help >/dev/null
@@ -167,6 +205,7 @@ Compatibility command also installed:
 
 Install check passed.
 Aliases: $alias_status
+tmux mouse: $tmux_mouse_status
 
 Quick start:
   export PATH="$install_bin:\$PATH"

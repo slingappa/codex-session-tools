@@ -1091,6 +1091,7 @@ Sidebar keys:
 Tmux pane keys:
   ${prefix} + Left : focus sidebar pane
   ${prefix} + Right: focus agent pane
+  mouse click     : focus clicked pane if tmux mouse is on
 
 Select a session from the left pane to start.
 AGENTIC_SESSIONS_HELP
@@ -1111,7 +1112,8 @@ def print_right_pane_help(providers: Sequence[str]) -> None:
         "  q             : close sidebar\n\n"
         "Tmux pane keys:\n"
         f"  {prefix} + Left : focus sidebar pane\n"
-        f"  {prefix} + Right: focus agent pane\n\n"
+        f"  {prefix} + Right: focus agent pane\n"
+        "  mouse click  : focus clicked pane if tmux mouse is on\n\n"
         "Select a session from the left pane to start.\n",
         flush=True,
     )

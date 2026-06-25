@@ -293,6 +293,7 @@ Outside tmux, it creates a new tmux session with one window and two panes.
 - `q`: close the sidebar pane
 - detected tmux prefix + `Left`: focus the sidebar pane from the agent pane
 - detected tmux prefix + `Right`: focus the agent pane from the sidebar pane
+- mouse click: focus the clicked pane when tmux mouse mode is enabled
 
 The sidebar caches the session list for fast arrow-key navigation. It reloads only on
 search, clear, rename, delete, or manual refresh.
@@ -312,9 +313,12 @@ command with `--all` for raw-file inspection.
 
 ## Optional tmux Configuration
 
-The tool does not require custom tmux settings, and the installer does not edit
-`~/.tmux.conf`. If you want mouse selection, copy-on-drag, and quick pane switching,
-add a local tmux snippet such as:
+The installer adds `set -g mouse on` to `~/.tmux.conf` when no tmux mouse setting
+is already present, so clicking a pane focuses it. Pass `--no-tmux-mouse` to skip
+that change, or `--tmux /path/to/tmux.conf` to choose a different config file.
+
+If you also want copy-on-drag and quick pane switching, add a local tmux snippet
+such as:
 
 ```tmux
 set -g mouse on

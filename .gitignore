@@ -1,3 +1,4 @@
+.agentic-session-tools.env
 .codex-session-tools.env
 __pycache__/
 *.pyc

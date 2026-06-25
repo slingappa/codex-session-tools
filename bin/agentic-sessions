@@ -1,0 +1,1168 @@
+#!/usr/bin/env python3
+"""Agentic session manager with optional tmux sidebar.
+
+Relocatable, stdlib-only core. It reads supported agent session JSONL files
+and stores user-facing metadata in a sidecar directory rather than editing
+sessions.
+"""
+
+from __future__ import annotations
+
+import argparse
+import curses
+import datetime as dt
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import textwrap
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Sequence
+
+
+UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+@dataclass
+class Config:
+    provider: str
+    agent_home: Path
+    sessions_root: Path
+    state_root: Path
+    names_file: Path
+    trash_root: Path
+
+
+@dataclass
+class Session:
+    provider: str
+    id: str
+    path: Path
+    timestamp: str
+    modified: float
+    cwd: str
+    source: str
+    model_provider: str
+    cli_version: str
+    first_prompt: str
+    last_prompt: str
+    custom_title: str = ""
+
+    @property
+    def title(self) -> str:
+        if self.custom_title:
+            return self.custom_title
+        if self.first_prompt:
+            return self.first_prompt
+        if self.cwd:
+            return Path(self.cwd).name or self.cwd
+        return self.id
+
+
+def eprint(*args: object) -> None:
+    print(*args, file=sys.stderr)
+
+
+def expand(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve()
+
+
+def normalize_provider(provider: str) -> str:
+    provider = provider.strip().lower()
+    if provider not in {"codex", "claude"}:
+        raise SystemExit(f"unsupported provider: {provider}")
+    return provider
+
+
+def provider_title(provider: str) -> str:
+    return "Claude" if provider == "claude" else "Codex"
+
+
+def session_name_key(provider: str, session_id: str) -> str:
+    return session_id if provider == "codex" else f"{provider}:{session_id}"
+
+
+def custom_title_for(names: dict, provider: str, session_id: str) -> str:
+    custom = names.get(session_name_key(provider, session_id), {})
+    if not custom and provider == "codex":
+        custom = names.get(session_id, {})
+    return str(custom.get("title", "")) if isinstance(custom, dict) else ""
+
+
+def parse_env_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def load_env_file(path: Path) -> None:
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        os.environ.setdefault(key, parse_env_value(value))
+
+
+def load_local_env() -> None:
+    script_root = Path(__file__).resolve().parent.parent
+    for path in (
+        script_root / ".agentic-session-tools.env",
+        script_root / ".codex-session-tools.env",
+        Path.home() / ".config" / "agentic-session-tools" / "env",
+        Path.home() / ".config" / "codex-session-tools" / "env",
+    ):
+        load_env_file(path)
+
+
+def default_agent_home(provider: str = "codex") -> Path:
+    provider = normalize_provider(provider)
+    if provider == "claude":
+        candidates: list[Path] = []
+        if os.environ.get("CLAUDE_CONFIG_DIR"):
+            candidates.append(expand(os.environ["CLAUDE_CONFIG_DIR"]))
+        if os.environ.get("CLAUDE_HOME"):
+            candidates.append(expand(os.environ["CLAUDE_HOME"]))
+        candidates.append(expand("~/.claude"))
+        candidates.append(expand("~/.config/claude"))
+        for candidate in candidates:
+            if (candidate / "projects").exists():
+                return candidate
+        return candidates[0]
+
+    candidates: list[Path] = []
+    if os.environ.get("CODEX_HOME"):
+        codex_home = expand(os.environ["CODEX_HOME"])
+        candidates.extend([codex_home, codex_home / "agent"])
+    candidates.append(expand("~/.codex"))
+    candidates.append(expand("~/.config/codex"))
+    for candidate in candidates:
+        if (candidate / "sessions").exists():
+            return candidate
+    return candidates[0]
+
+
+def build_config(args: argparse.Namespace) -> Config:
+    provider = normalize_provider(
+        getattr(
+            args,
+            "provider",
+            os.environ.get("AGENTIC_SESSION_PROVIDER", os.environ.get("CODEX_SESSION_PROVIDER", "codex")),
+        )
+    )
+    agent_home_arg = getattr(args, "agent_home", None)
+    sessions_root_arg = getattr(args, "sessions_root", None)
+    state_root_arg = getattr(args, "state_root", None)
+    agent_home = expand(agent_home_arg) if agent_home_arg else default_agent_home(provider)
+    sessions_root_env = os.environ.get("CLAUDE_SESSIONS_ROOT" if provider == "claude" else "CODEX_SESSIONS_ROOT")
+    if sessions_root_arg:
+        sessions_root = expand(sessions_root_arg)
+    elif sessions_root_env:
+        sessions_root = expand(sessions_root_env)
+    else:
+        sessions_root = agent_home / ("projects" if provider == "claude" else "sessions")
+    if state_root_arg:
+        state_root = expand(state_root_arg)
+    elif provider == "claude" and os.environ.get("CLAUDE_SESSION_TOOLS_HOME"):
+        state_root = expand(os.environ["CLAUDE_SESSION_TOOLS_HOME"])
+    elif os.environ.get("AGENTIC_SESSION_TOOLS_HOME"):
+        state_root = expand(os.environ["AGENTIC_SESSION_TOOLS_HOME"])
+    elif os.environ.get("CODEX_SESSION_TOOLS_HOME"):
+        state_root = expand(os.environ["CODEX_SESSION_TOOLS_HOME"])
+    else:
+        state_root = (agent_home.parent if agent_home.name == "agent" else agent_home) / "session-tools"
+    return Config(
+        provider=provider,
+        agent_home=agent_home,
+        sessions_root=sessions_root,
+        state_root=state_root,
+        names_file=state_root / "session-names.json",
+        trash_root=state_root / "trash",
+    )
+
+
+def load_json_object(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def atomic_write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+def normalize_ws(text: str, limit: int = 180) -> str:
+    clean = " ".join(text.split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 1)].rstrip() + "…"
+
+
+def is_injected_user_context(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    injected_prefixes = (
+        "# AGENTS.md instructions",
+        "# Model Set Context",
+        "<system>",
+        "<developer>",
+        "<environment_context>",
+        "<turn_aborted>",
+        "<skill>",
+        "<user>",
+        "<assistant>",
+        "<tool>",
+    )
+    if stripped.startswith(injected_prefixes):
+        return True
+    if "<environment_context>" in stripped and "</environment_context>" in stripped and len(stripped) > 1000:
+        return True
+    return False
+
+
+def extract_text_from_message(payload: dict) -> str:
+    content = payload.get("content") or []
+    texts: list[str] = []
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("input_text")
+                if isinstance(text, str):
+                    texts.append(text)
+            elif isinstance(item, str):
+                texts.append(item)
+    elif isinstance(content, str):
+        texts.append(content)
+    return "\n".join(texts).strip()
+
+
+def parse_codex_session(path: Path, names: dict, scan_all_prompts: bool = False) -> Session | None:
+    meta: dict = {}
+    first_prompt = ""
+    last_prompt = ""
+    fallback_id = ""
+    match = UUID_RE.search(path.name)
+    if match:
+        fallback_id = match.group(0).lower()
+
+    try:
+        with path.open(errors="replace") as handle:
+            for raw in handle:
+                try:
+                    record = json.loads(raw)
+                except Exception:
+                    continue
+                payload = record.get("payload") or {}
+                if record.get("type") == "session_meta" and isinstance(payload, dict):
+                    meta = payload
+                    continue
+                if record.get("type") != "response_item" or not isinstance(payload, dict):
+                    continue
+                if payload.get("type") != "message" or payload.get("role") != "user":
+                    continue
+                text = extract_text_from_message(payload)
+                if is_injected_user_context(text):
+                    continue
+                preview = normalize_ws(text)
+                if not first_prompt:
+                    first_prompt = preview
+                if preview:
+                    last_prompt = preview
+                if first_prompt and not scan_all_prompts:
+                    break
+    except OSError:
+        return None
+
+    session_id = str(meta.get("id") or fallback_id).lower()
+    if not session_id:
+        return None
+
+    custom_title = custom_title_for(names, "codex", session_id)
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        modified = 0
+    return Session(
+        provider="codex",
+        id=session_id,
+        path=path,
+        timestamp=str(meta.get("timestamp") or ""),
+        modified=modified,
+        cwd=str(meta.get("cwd") or ""),
+        source=str(meta.get("source") or ""),
+        model_provider=str(meta.get("model_provider") or ""),
+        cli_version=str(meta.get("cli_version") or ""),
+        first_prompt=first_prompt,
+        last_prompt=last_prompt,
+        custom_title=str(custom_title),
+    )
+
+
+def parse_claude_session(path: Path, names: dict, scan_all_prompts: bool = False) -> Session | None:
+    first_prompt = ""
+    last_prompt = ""
+    session_id = ""
+    timestamp = ""
+    cwd = ""
+    cli_version = ""
+    model_provider = ""
+    match = UUID_RE.search(path.name)
+    if match:
+        session_id = match.group(0).lower()
+
+    try:
+        with path.open(errors="replace") as handle:
+            for raw in handle:
+                try:
+                    record = json.loads(raw)
+                except Exception:
+                    continue
+                if not session_id and record.get("sessionId"):
+                    session_id = str(record.get("sessionId")).lower()
+                if not timestamp and record.get("timestamp"):
+                    timestamp = str(record.get("timestamp"))
+                if not cwd and record.get("cwd"):
+                    cwd = str(record.get("cwd"))
+                if not cli_version and record.get("version"):
+                    cli_version = str(record.get("version"))
+
+                message = record.get("message")
+                if isinstance(message, dict) and not model_provider and message.get("model"):
+                    model_provider = str(message.get("model"))
+
+                text = ""
+                if record.get("type") == "last-prompt" and isinstance(record.get("lastPrompt"), str):
+                    text = str(record.get("lastPrompt"))
+                elif record.get("type") == "user" and isinstance(message, dict) and message.get("role") == "user":
+                    text = extract_text_from_message(message)
+
+                if not text or is_injected_user_context(text):
+                    continue
+                preview = normalize_ws(text)
+                if not first_prompt:
+                    first_prompt = preview
+                if preview:
+                    last_prompt = preview
+                if first_prompt and not scan_all_prompts:
+                    break
+    except OSError:
+        return None
+
+    if not session_id:
+        return None
+
+    custom_title = custom_title_for(names, "claude", session_id)
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        modified = 0
+    return Session(
+        provider="claude",
+        id=session_id,
+        path=path,
+        timestamp=timestamp,
+        modified=modified,
+        cwd=cwd,
+        source="claude-code",
+        model_provider=model_provider,
+        cli_version=cli_version,
+        first_prompt=first_prompt,
+        last_prompt=last_prompt,
+        custom_title=str(custom_title),
+    )
+
+
+def parse_session(path: Path, names: dict, provider: str, scan_all_prompts: bool = False) -> Session | None:
+    if provider == "claude":
+        return parse_claude_session(path, names, scan_all_prompts=scan_all_prompts)
+    return parse_codex_session(path, names, scan_all_prompts=scan_all_prompts)
+
+
+def load_sessions(config: Config, query: str = "", limit: int = 0, scan_all_prompts: bool = False) -> list[Session]:
+    names = load_json_object(config.names_file)
+    files = session_files(config)
+    sessions: list[Session] = []
+    seen_ids: set[str] = set()
+    for path in files:
+        session = parse_session(path, names, config.provider, scan_all_prompts=scan_all_prompts)
+        if not session or session.id in seen_ids:
+            continue
+        seen_ids.add(session.id)
+        if query and query.lower() not in session_haystack(session):
+            continue
+        sessions.append(session)
+        if limit and len(sessions) >= limit:
+            break
+    if query:
+        sessions.sort(key=lambda session: session.modified, reverse=True)
+    return sessions
+
+
+def session_files(config: Config) -> list[Path]:
+    pattern = "*.jsonl" if config.provider == "claude" else "rollout-*.jsonl"
+    files = [Path(p) for p in glob.glob(str(config.sessions_root / "**" / pattern), recursive=True)]
+    files.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
+    return files
+
+
+def looks_like_id_fragment(selector: str) -> bool:
+    needle = selector.strip().lower()
+    return len(needle) >= 4 and all(char in "0123456789abcdef-" for char in needle)
+
+
+def resolve_session_selector(config: Config, selector: str, match_limit: int = 200) -> Session:
+    names = load_json_object(config.names_file)
+    needle = selector.strip().lower()
+    if looks_like_id_fragment(needle):
+        matches = [path for path in session_files(config) if needle in path.name.lower()]
+        sessions = []
+        for path in matches:
+            session = parse_session(path, names, config.provider)
+            if session:
+                sessions.append(session)
+        if sessions:
+            return resolve_session(sessions, selector)
+    return resolve_session(load_sessions(config, selector, limit=match_limit), selector)
+
+
+def session_haystack(session: Session) -> str:
+    return "\n".join(
+        [session.provider, session.id, session.title, session.first_prompt, session.last_prompt, session.cwd, str(session.path)]
+    ).lower()
+
+
+def format_time(epoch: float) -> str:
+    if not epoch:
+        return "?"
+    return dt.datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M")
+
+
+def short_cwd(cwd: str, width: int = 24) -> str:
+    if not cwd:
+        return "-"
+    path = Path(cwd)
+    text = f"…/{path.parent.name}/{path.name}" if path.parent.name else path.name
+    if len(text) > width:
+        return "…" + text[-(width - 1) :]
+    return text
+
+
+def shorten(text: str, width: int) -> str:
+    text = text.replace("\n", " ")
+    if len(text) <= width:
+        return text
+    return text[: max(0, width - 1)].rstrip() + "…"
+
+
+def print_sessions(sessions: Sequence[Session], long: bool = False, json_output: bool = False) -> None:
+    if json_output:
+        rows = []
+        for s in sessions:
+            rows.append(
+                {
+                    "provider": s.provider,
+                    "id": s.id,
+                    "title": s.title,
+                    "custom_title": s.custom_title,
+                    "timestamp": s.timestamp,
+                    "modified": s.modified,
+                    "modified_text": format_time(s.modified),
+                    "cwd": s.cwd,
+                    "first_prompt": s.first_prompt,
+                    "last_prompt": s.last_prompt,
+                    "path": str(s.path),
+                    "source": s.source,
+                    "model_provider": s.model_provider,
+                    "cli_version": s.cli_version,
+                }
+            )
+        print(json.dumps(rows, indent=2))
+        return
+
+    width = shutil.get_terminal_size((120, 24)).columns
+    if long:
+        if not sessions:
+            print("no sessions found")
+            return
+        for s in sessions:
+            print(f"{s.id}  {format_time(s.modified)}  {s.title}")
+            print(f"  cwd:  {s.cwd or '-'}")
+            print(f"  file: {s.path}")
+            if s.first_prompt and s.first_prompt != s.title:
+                print(f"  first: {s.first_prompt}")
+        return
+
+    title_width = max(20, width - 15 - 18 - 26 - 3)
+    print(f"{'ID':12} {'MODIFIED':16} {'CWD':24} TITLE")
+    print(f"{'-'*12} {'-'*16} {'-'*24} {'-'*min(title_width, 30)}")
+    if not sessions:
+        print("no sessions found")
+        return
+    for s in sessions:
+        print(
+            f"{s.id[:12]:12} {format_time(s.modified):16} {short_cwd(s.cwd):24} {shorten(s.title, title_width)}"
+        )
+
+
+def resolve_session(sessions: Sequence[Session], selector: str) -> Session:
+    needle = selector.lower().strip()
+    if not needle:
+        raise SystemExit("empty session selector")
+    exact = [s for s in sessions if s.id == needle]
+    if len(exact) == 1:
+        return exact[0]
+    prefix = [s for s in sessions if s.id.startswith(needle)]
+    if len(prefix) == 1:
+        return prefix[0]
+    contains = [s for s in sessions if needle in session_haystack(s)]
+    if len(contains) == 1:
+        return contains[0]
+    if not prefix and not contains:
+        raise SystemExit(f"no session matches: {selector}")
+    matches = prefix or contains
+    print_sessions(matches[:10])
+    raise SystemExit(f"ambiguous selector {selector!r}; use a longer id/title fragment")
+
+
+def command_list(args: argparse.Namespace) -> int:
+    config = build_config(args)
+    sessions = load_sessions(config, args.query or "", limit=args.limit, scan_all_prompts=args.scan_all_prompts)
+    print_sessions(sessions, long=args.long, json_output=args.json)
+    return 0
+
+
+def command_rename(args: argparse.Namespace) -> int:
+    config = build_config(args)
+    session = resolve_session_selector(config, args.selector, args.match_limit)
+    names = load_json_object(config.names_file)
+    key = session_name_key(config.provider, session.id)
+    title = args.title.strip()
+    if not title:
+        names.pop(key, None)
+        action = "cleared custom title for"
+    else:
+        names[key] = {
+            "title": title,
+            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "provider": config.provider,
+            "session_path": str(session.path),
+        }
+        action = "renamed"
+    atomic_write_json(config.names_file, names)
+    print(f"{action} {session.id[:12]} -> {title or session.title}")
+    return 0
+
+
+def trash_destination(config: Config, session: Session) -> Path:
+    try:
+        relative = session.path.relative_to(config.sessions_root)
+    except ValueError:
+        relative = Path(session.path.name)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return config.trash_root / stamp / relative
+
+
+def move_to_trash(config: Config, session: Session) -> Path:
+    dest = trash_destination(config, session)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(session.path), str(dest))
+    manifest = config.trash_root / "manifest.jsonl"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("a") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "provider": session.provider,
+                    "id": session.id,
+                    "title": session.title,
+                    "from": str(session.path),
+                    "to": str(dest),
+                    "deleted_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
+            )
+            + "\n"
+        )
+    return dest
+
+
+def command_delete(args: argparse.Namespace) -> int:
+    config = build_config(args)
+    session = resolve_session_selector(config, args.selector, args.match_limit)
+    if not args.yes:
+        answer = input(f"Move session {session.id} ({session.title}) to trash? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("not deleted")
+            return 1
+    dest = move_to_trash(config, session)
+    print(f"moved to trash: {dest}")
+    return 0
+
+
+def command_resume(args: argparse.Namespace) -> int:
+    config = build_config(args)
+    session = resolve_session_selector(config, args.selector, args.match_limit)
+    command = resume_command(config.provider, agent_bin_for(args, config.provider), session.id)
+    if args.print_command:
+        print(" ".join(shell_quote(part) for part in command))
+        return 0
+    os.execvp(command[0], command)
+    return 127
+
+
+def command_paths(args: argparse.Namespace) -> int:
+    config = build_config(args)
+    print(f"provider={config.provider}")
+    print(f"agent_home={config.agent_home}")
+    print(f"sessions_root={config.sessions_root}")
+    print(f"state_root={config.state_root}")
+    print(f"names_file={config.names_file}")
+    print(f"trash_root={config.trash_root}")
+    return 0
+
+
+def command_doctor(args: argparse.Namespace) -> int:
+    config = build_config(args)
+    agent_bin = agent_bin_for(args, config.provider)
+    agent_bin_ok = command_is_available(agent_bin) or bool(os.environ.get("CLAUDE_BIN" if config.provider == "claude" else "CODEX_BIN"))
+    core_checks = [
+        ("python", sys.executable, True),
+        ("python-curses", "stdlib curses import", True),
+        ("sessions_root", str(config.sessions_root), config.sessions_root.exists()),
+    ]
+    optional_checks = [
+        (
+            config.provider,
+            agent_bin,
+            agent_bin_ok,
+            f"required for resume/tmux Enter; {('CLAUDE_BIN' if config.provider == 'claude' else 'CODEX_BIN')} is trusted if set",
+        ),
+        ("tmux", shutil.which("tmux") or "tmux", shutil.which("tmux") is not None, "required for tmux sidebar"),
+    ]
+    core_ok = True
+    for name, value, passed in core_checks:
+        status = "ok" if passed else "missing"
+        print(f"{status:8} required {name:16} {value}")
+        core_ok = core_ok and passed
+    optional_ok = True
+    for name, value, passed, note in optional_checks:
+        status = "ok" if passed else "missing"
+        print(f"{status:8} optional {name:16} {value} ({note})")
+        optional_ok = optional_ok and passed
+    if args.strict and not optional_ok:
+        return 1
+    return 0 if core_ok else 1
+
+
+def ensure_tmux() -> str:
+    tmux = shutil.which("tmux")
+    if not tmux:
+        raise SystemExit("tmux is required for sidebar mode")
+    return tmux
+
+
+def shell_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def command_is_available(command: str) -> bool:
+    path = Path(command).expanduser()
+    if path.parent != Path(".") or command.startswith("~"):
+        return path.exists() and os.access(path, os.X_OK)
+    return shutil.which(command) is not None
+
+
+def default_codex_bin() -> str:
+    env_bin = os.environ.get("CODEX_BIN")
+    if env_bin:
+        candidate = Path(env_bin).expanduser()
+        if candidate.parent != Path(".") or env_bin.startswith("~"):
+            return str(candidate)
+        return env_bin
+    path_bin = shutil.which("codex")
+    if path_bin:
+        return path_bin
+    candidates = [
+        Path.home() / ".local" / "bin" / "codex",
+        Path("/usr/local/bin/codex"),
+        Path("/opt/codex/bin/codex"),
+    ]
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return "codex"
+
+
+def default_claude_bin() -> str:
+    env_bin = os.environ.get("CLAUDE_BIN")
+    if env_bin:
+        candidate = Path(env_bin).expanduser()
+        if candidate.parent != Path(".") or env_bin.startswith("~"):
+            return str(candidate)
+        return env_bin
+    path_bin = shutil.which("claude")
+    if path_bin:
+        return path_bin
+    candidates = [
+        Path.home() / ".local" / "bin" / "claude",
+        Path("/usr/local/bin/claude"),
+        Path("/opt/claude/bin/claude"),
+    ]
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return "claude"
+
+
+def agent_bin_for(args: argparse.Namespace, provider: str) -> str:
+    if provider == "claude":
+        return getattr(args, "claude_bin", default_claude_bin())
+    return getattr(args, "codex_bin", default_codex_bin())
+
+
+def resume_command(provider: str, agent_bin: str, session_id: str) -> list[str]:
+    if provider == "claude":
+        return [agent_bin, "--resume", session_id]
+    return [agent_bin, "resume", session_id]
+
+
+def run_tmux(args: Sequence[str], dry_run: bool = False) -> subprocess.CompletedProcess[str] | None:
+    command = ["tmux", *args]
+    if dry_run:
+        print("+ " + " ".join(shell_quote(part) if " " in part else part for part in command))
+        return None
+    return subprocess.run(command, text=True, check=True, capture_output=True)
+
+
+def tmux_prefix_key(default: str = "prefix") -> str:
+    try:
+        result = subprocess.run(
+            ["tmux", "show-option", "-gqv", "prefix"],
+            text=True,
+            check=False,
+            capture_output=True,
+        )
+    except Exception:
+        return default
+    prefix = result.stdout.strip()
+    return prefix or default
+
+
+def right_pane_help_command(provider: str) -> str:
+    title = provider_title(provider)
+    return """prefix="$(tmux show-option -gqv prefix 2>/dev/null || true)"
+[ -n "$prefix" ] || prefix="prefix"
+cat <<AGENTIC_SESSIONS_HELP
+""" + title + """ Sessions tmux workspace
+
+Sidebar keys:
+  j/k or arrows : move
+  Enter         : resume here
+  r             : rename
+  d             : trash; confirm DELETE
+  /             : search
+  c             : clear search
+  q             : close sidebar
+
+Tmux pane keys:
+  ${prefix} + Left : focus sidebar pane
+  ${prefix} + Right: focus agent pane
+
+Select a session from the left pane to start.
+AGENTIC_SESSIONS_HELP
+exec "${SHELL:-/bin/bash}" -l"""
+
+
+def print_right_pane_help(provider: str) -> None:
+    prefix = tmux_prefix_key()
+    print(
+        f"{provider_title(provider)} Sessions tmux workspace\n\n"
+        "Sidebar keys:\n"
+        "  j/k or arrows : move\n"
+        "  Enter         : resume here\n"
+        "  r             : rename\n"
+        "  d             : trash; confirm DELETE\n"
+        "  /             : search\n"
+        "  c             : clear search\n"
+        "  q             : close sidebar\n\n"
+        "Tmux pane keys:\n"
+        f"  {prefix} + Left : focus sidebar pane\n"
+        f"  {prefix} + Right: focus agent pane\n\n"
+        "Select a session from the left pane to start.\n",
+        flush=True,
+    )
+
+
+def sidebar_shell_command(
+    script: str, right_pane: str, codex_bin: str, claude_bin: str, python_bin: str, config: Config
+) -> str:
+    return (
+        "log=/tmp/agentic-sessions-sidebar-${TMUX_PANE#%}.log; "
+        "while [ \"$(tmux display-message -p -t "
+        + shell_quote(right_pane)
+        + " '#{session_attached}' 2>/dev/null)\" = \"0\" ]; do sleep 0.1; done; exec "
+        + shell_quote(python_bin)
+        + " "
+        + shell_quote(script)
+        + " --provider "
+        + shell_quote(config.provider)
+        + " --agent-home "
+        + shell_quote(str(config.agent_home))
+        + " --sessions-root "
+        + shell_quote(str(config.sessions_root))
+        + " --state-root "
+        + shell_quote(str(config.state_root))
+        + " sidebar --target-pane "
+        + shell_quote(right_pane)
+        + " --codex-bin "
+        + shell_quote(codex_bin)
+        + " --claude-bin "
+        + shell_quote(claude_bin)
+        + " 2>>\"$log\""
+    )
+
+
+def command_tmux(args: argparse.Namespace) -> int:
+    ensure_tmux()
+    config = build_config(args)
+    script = str(Path(__file__).resolve())
+    python_bin = sys.executable or "python3"
+    session_name = args.name
+    width = str(args.width)
+    placeholder = right_pane_help_command(config.provider)
+
+    if args.dry_run:
+        print("# tmux commands that would be used")
+
+    if os.environ.get("TMUX") and not args.new_session:
+        if not args.dry_run:
+            print_right_pane_help(config.provider)
+        right_pane = subprocess.run(
+            ["tmux", "display-message", "-p", "#{pane_id}"],
+            text=True,
+            check=True,
+            capture_output=True,
+        ).stdout.strip()
+        sidebar_cmd = sidebar_shell_command(script, right_pane, args.codex_bin, args.claude_bin, python_bin, config)
+        if args.dry_run:
+            print(f"# inside tmux: split current window; target right pane is {right_pane}")
+            run_tmux(["split-window", "-h", "-b", "-l", width, "-t", right_pane, sidebar_cmd], True)
+            run_tmux(["select-pane", "-t", right_pane], True)
+            return 0
+        run_tmux(["split-window", "-h", "-b", "-l", width, "-t", right_pane, sidebar_cmd])
+        run_tmux(["select-pane", "-t", right_pane])
+        return 0
+
+    run_tmux(["new-session", "-d", "-s", session_name, "-n", config.provider, placeholder], args.dry_run)
+    if args.dry_run:
+        print("# plus: capture right pane id, split left, attach")
+        return 0
+    right_pane = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", f"{session_name}:0.0", "#{pane_id}"],
+        text=True,
+        check=True,
+        capture_output=True,
+    ).stdout.strip()
+    sidebar_cmd = sidebar_shell_command(script, right_pane, args.codex_bin, args.claude_bin, python_bin, config)
+    run_tmux(["split-window", "-h", "-b", "-l", width, "-t", right_pane, sidebar_cmd])
+    run_tmux(["select-pane", "-t", right_pane])
+    if args.no_attach:
+        print(f"created tmux session: {session_name}")
+        print(f"attach with: tmux attach -t {session_name}")
+        return 0
+    os.execvp("tmux", ["tmux", "attach", "-t", session_name])
+    return 127
+
+
+def sidebar_line(session: Session, width: int, selected: bool) -> str:
+    marker = "›" if selected else " "
+    custom = "★ " if session.custom_title else ""
+    age = format_time(session.modified)[5:16]
+    cwd_text = short_cwd(session.cwd, 18)
+    prefix = f"{marker} {age} {cwd_text:<18} "
+    if width >= 34:
+        title_width = max(8, width - len(prefix))
+        return f"{prefix}{custom}{shorten(session.title, max(1, title_width - len(custom)))}"
+    title_width = max(8, width - 17)
+    return f"{marker} {age} {custom}{shorten(session.title, title_width)}"
+
+
+def prompt(stdscr: curses.window, row: int, label: str, initial: str = "") -> str | None:
+    curses.echo()
+    curses.curs_set(1)
+    height, width = stdscr.getmaxyx()
+    stdscr.move(row, 0)
+    stdscr.clrtoeol()
+    text = f"{label}: "
+    stdscr.addnstr(row, 0, text, width - 1)
+    if initial:
+        stdscr.addnstr(initial, max(0, width - len(text) - 1))
+    stdscr.refresh()
+    try:
+        value = stdscr.getstr(row, len(text), max(1, width - len(text) - 1)).decode()
+    except KeyboardInterrupt:
+        value = None
+    curses.noecho()
+    curses.curs_set(0)
+    return value
+
+
+def send_resume_to_pane(target_pane: str, session: Session, agent_bin: str, kill_running: bool) -> None:
+    if kill_running:
+        subprocess.run(["tmux", "send-keys", "-t", target_pane, "C-c"], check=False)
+        time.sleep(0.1)
+    command = resume_command(session.provider, agent_bin, session.id)
+    subprocess.run(
+        ["tmux", "send-keys", "-t", target_pane, " ".join(shell_quote(part) for part in command), "Enter"],
+        check=False,
+    )
+    subprocess.run(["tmux", "select-pane", "-t", target_pane], check=False)
+
+
+def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
+    config = build_config(args)
+    agent_bin = agent_bin_for(args, config.provider)
+    curses.curs_set(0)
+    stdscr.nodelay(False)
+    selected = 0
+    query = ""
+    help_text = f"{provider_title(config.provider)} ↑↓/j/k move Enter resume r rename d trash / search c clear R refresh q quit"
+    message = help_text
+    sessions: list[Session] = []
+    needs_reload = True
+    while True:
+        if needs_reload:
+            sessions = load_sessions(config, query, limit=args.limit)
+            needs_reload = False
+            message = f"loaded {len(sessions)} sessions" if sessions else "no sessions found"
+            if sessions:
+                selected = min(selected, len(sessions) - 1)
+            else:
+                selected = 0
+        height, width = stdscr.getmaxyx()
+        draw_width = max(1, width - 1)
+        stdscr.erase()
+        header = f" {provider_title(config.provider)} Sessions " + (f"/{query}" if query else "")
+        stdscr.addnstr(0, 0, header.ljust(draw_width), draw_width, curses.A_REVERSE)
+        help_row = 1
+        list_start = 2
+        max_rows = max(0, height - 5)
+        start = max(0, selected - max_rows + 1)
+        visible = sessions[start : start + max_rows]
+        stdscr.addnstr(help_row, 0, shorten(help_text, draw_width).ljust(draw_width), draw_width, curses.A_DIM)
+        for offset, session in enumerate(visible):
+            row = list_start + offset
+            is_selected = start + offset == selected
+            attr = curses.A_REVERSE if is_selected else curses.A_NORMAL
+            stdscr.addnstr(row, 0, sidebar_line(session, draw_width, is_selected).ljust(draw_width), draw_width, attr)
+        footer_row = height - 2
+        if sessions:
+            current = sessions[selected]
+            detail = f"{current.id[:12]} {short_cwd(current.cwd, max(10, width - 15))}"
+        else:
+            detail = "no sessions"
+        stdscr.addnstr(footer_row, 0, detail.ljust(draw_width), draw_width, curses.A_DIM)
+        stdscr.addnstr(height - 1, 0, shorten(message, draw_width).ljust(draw_width), draw_width, curses.A_REVERSE)
+        stdscr.refresh()
+        key = stdscr.getch()
+        if key in (ord("q"), 27):
+            return 0
+        if key in (curses.KEY_DOWN, ord("j")):
+            selected = min(selected + 1, max(0, len(sessions) - 1))
+        elif key in (curses.KEY_UP, ord("k")):
+            selected = max(0, selected - 1)
+        elif key in (curses.KEY_NPAGE, ord(" ")):
+            selected = min(selected + max_rows, max(0, len(sessions) - 1))
+        elif key == curses.KEY_PPAGE:
+            selected = max(0, selected - max_rows)
+        elif key in (ord("/"),):
+            value = prompt(stdscr, height - 1, "search", query)
+            if value is not None:
+                query = value.strip()
+                selected = 0
+                needs_reload = True
+        elif key in (ord("c"),):
+            query = ""
+            selected = 0
+            needs_reload = True
+        elif key == ord("R"):
+            needs_reload = True
+        elif key in (10, 13):
+            if sessions:
+                send_resume_to_pane(args.target_pane, sessions[selected], agent_bin, args.kill_running)
+                message = f"sent resume for {sessions[selected].id[:12]}"
+        elif key == ord("r"):
+            if sessions:
+                current = sessions[selected]
+                value = prompt(stdscr, height - 1, "rename", current.custom_title or current.title)
+                if value is not None:
+                    names = load_json_object(config.names_file)
+                    value = value.strip()
+                    key = session_name_key(config.provider, current.id)
+                    if value:
+                        names[key] = {
+                            "title": value,
+                            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                            "provider": config.provider,
+                            "session_path": str(current.path),
+                        }
+                        message = f"renamed {current.id[:12]}"
+                    else:
+                        names.pop(key, None)
+                        message = f"cleared title {current.id[:12]}"
+                    atomic_write_json(config.names_file, names)
+                    needs_reload = True
+        elif key == ord("d"):
+            if sessions:
+                current = sessions[selected]
+                value = prompt(stdscr, height - 1, "type DELETE to trash", "")
+                if value == "DELETE":
+                    move_to_trash(config, current)
+                    message = f"trashed {current.id[:12]}"
+                    selected = max(0, selected - 1)
+                    needs_reload = True
+                else:
+                    message = "delete cancelled"
+
+
+def command_sidebar(args: argparse.Namespace) -> int:
+    if args.render_once:
+        config = build_config(args)
+        print_sessions(load_sessions(config, limit=args.limit))
+        return 0
+    if not args.target_pane:
+        raise SystemExit("sidebar requires --target-pane")
+    return curses.wrapper(sidebar_curses, args)
+
+
+def add_global_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--provider",
+        choices=("codex", "claude"),
+        default=argparse.SUPPRESS,
+        help="session provider; default: AGENTIC_SESSION_PROVIDER or codex",
+    )
+    parser.add_argument(
+        "--agent-home",
+        default=argparse.SUPPRESS,
+        help="agent home/config dir; default from CODEX_HOME/CLAUDE_CONFIG_DIR or ~/.codex/~/.claude",
+    )
+    parser.add_argument(
+        "--sessions-root",
+        default=argparse.SUPPRESS,
+        help="session root; default: provider env or <agent-home>/sessions|projects",
+    )
+    parser.add_argument(
+        "--state-root",
+        default=argparse.SUPPRESS,
+        help="sidecar metadata root; default: <agent-home>/session-tools",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    program_name = Path(sys.argv[0]).name or "agentic-sessions"
+    parser = argparse.ArgumentParser(
+        prog=program_name,
+        description="List, rename, trash, resume, and tmux-browse Codex or Claude Code sessions.",
+    )
+    add_global_args(parser)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("paths", help="show resolved paths")
+    add_global_args(p)
+    p.set_defaults(func=command_paths)
+
+    p = sub.add_parser("doctor", help="check local runtime dependencies")
+    add_global_args(p)
+    p.add_argument("--strict", action="store_true", help="fail if optional codex/tmux dependencies are missing")
+    p.set_defaults(func=command_doctor)
+
+    p = sub.add_parser("list", help="list sessions")
+    add_global_args(p)
+    p.add_argument("-q", "--query", help="case-insensitive filter")
+    p.add_argument("-n", "--limit", type=int, default=50, help="maximum rows; use 0 for all")
+    p.add_argument("--long", action="store_true", help="include cwd and file path")
+    p.add_argument("--json", action="store_true", help="emit JSON")
+    p.add_argument("--scan-all-prompts", action="store_true", help="slower: scan full rollouts for last prompt")
+    p.set_defaults(func=command_list)
+
+    p = sub.add_parser("rename", help="set or clear a custom session title")
+    add_global_args(p)
+    p.add_argument("selector", help="session id/prefix/title fragment")
+    p.add_argument("title", help="new title; pass empty string to clear")
+    p.add_argument("--match-limit", type=int, default=200, help="maximum matching rows to scan")
+    p.set_defaults(func=command_rename)
+
+    p = sub.add_parser("delete", aliases=["trash"], help="move a session file to sidecar trash")
+    add_global_args(p)
+    p.add_argument("selector", help="session id/prefix/title fragment")
+    p.add_argument("-y", "--yes", action="store_true", help="do not prompt")
+    p.add_argument("--match-limit", type=int, default=200, help="maximum matching rows to scan")
+    p.set_defaults(func=command_delete)
+
+    p = sub.add_parser("resume", help="exec provider resume for a selected session")
+    add_global_args(p)
+    p.add_argument("selector", help="session id/prefix/title fragment")
+    p.add_argument("--codex-bin", default=default_codex_bin(), help="codex executable")
+    p.add_argument("--claude-bin", default=default_claude_bin(), help="claude executable")
+    p.add_argument("--print-command", action="store_true", help="print instead of exec")
+    p.add_argument("--match-limit", type=int, default=200, help="maximum matching rows to scan")
+    p.set_defaults(func=command_resume)
+
+    p = sub.add_parser("tmux", help="launch a tmux workspace with a sessions sidebar")
+    add_global_args(p)
+    p.add_argument("--name", default=program_name, help="tmux session name")
+    p.add_argument("--width", type=int, default=56, help="sidebar width in columns")
+    p.add_argument("--no-attach", action="store_true", help="create detached and print attach command")
+    p.add_argument("--new-session", action="store_true", help="force a new tmux session even inside tmux")
+    p.add_argument("--dry-run", action="store_true", help="print tmux commands only")
+    p.add_argument("--codex-bin", default=default_codex_bin(), help="codex executable")
+    p.add_argument("--claude-bin", default=default_claude_bin(), help="claude executable")
+    p.set_defaults(func=command_tmux)
+
+    p = sub.add_parser("sidebar", help=argparse.SUPPRESS)
+    add_global_args(p)
+    p.add_argument("--target-pane", help="tmux pane id to receive codex resume commands")
+    p.add_argument("--codex-bin", default=default_codex_bin(), help="codex executable")
+    p.add_argument("--claude-bin", default=default_claude_bin(), help="claude executable")
+    kill_group = p.add_mutually_exclusive_group()
+    kill_group.add_argument("--kill-running", dest="kill_running", action="store_true", default=True)
+    kill_group.add_argument("--no-kill-running", dest="kill_running", action="store_false")
+    p.add_argument("--render-once", action="store_true")
+    p.add_argument("--limit", type=int, default=200)
+    p.set_defaults(func=command_sidebar)
+
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    load_local_env()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

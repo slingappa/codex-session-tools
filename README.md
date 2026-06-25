@@ -1,15 +1,15 @@
-# codex-session-tools
+# agentic-session-tools
 
-`codex-session-tools` is a small, relocatable helper for browsing and resuming
+`agentic-session-tools` is a small, relocatable helper for browsing and resuming
 Codex and Claude Code sessions without modifying either tool's session files.
 
 It provides:
 
-- `codex-sessions list` — list recent Codex or Claude sessions with time, CWD, and prompt preview
-- `codex-sessions rename` — add human-friendly titles using sidecar metadata
-- `codex-sessions delete` — move session JSONL files to a recoverable trash folder
-- `codex-sessions resume` — resume by UUID, UUID prefix, or unique text fragment
-- `codex-sessions tmux` — tmux two-pane workspace with a session sidebar
+- `agentic-sessions list` — list recent Codex or Claude sessions with time, CWD, and prompt preview
+- `agentic-sessions rename` — add human-friendly titles using sidecar metadata
+- `agentic-sessions delete` — move session JSONL files to a recoverable trash folder
+- `agentic-sessions resume` — resume by UUID, UUID prefix, or unique text fragment
+- `agentic-sessions tmux` — tmux two-pane workspace with a session sidebar
 
 The tool is intentionally dependency-light: Python 3 stdlib plus `tmux` for sidebar mode.
 
@@ -20,15 +20,15 @@ The screenshots below use representative session data and do not expose real tea
 
 ### Dependency Check
 
-![codex-sessions doctor terminal output](docs/screenshots/doctor.svg)
+![agentic-sessions doctor terminal output](docs/screenshots/doctor.svg)
 
 ### Session List
 
-![codex-sessions list terminal output](docs/screenshots/list.svg)
+![agentic-sessions list terminal output](docs/screenshots/list.svg)
 
-### tmux Sidebar With Resumed Codex Session
+### tmux Sidebar With Resumed Agent Session
 
-![codex-sessions tmux sidebar next to an active resumed Codex session](docs/screenshots/tmux-sidebar.svg)
+![agentic-sessions tmux sidebar next to an active resumed agent session](docs/screenshots/tmux-sidebar.svg)
 
 ## Requirements
 
@@ -54,7 +54,7 @@ Required for resume/sidebar workflows:
 - Codex installed as `codex`, available at `~/.local/bin/codex`, or configured via `CODEX_BIN=/path/to/codex`
 - Claude Code installed as `claude`, available at `~/.local/bin/claude`, or configured via `CLAUDE_BIN=/path/to/claude`
 - A compatible wrapper can be used by setting `CODEX_BIN` or `CLAUDE_BIN` to that executable path or command name
-- `tmux` for `codex-sessions tmux`
+- `tmux` for `agentic-sessions tmux`
 - A POSIX-compatible shell for tmux pane bootstrap snippets (`sh`, `bash`, or `zsh`)
 
 Required only for installation/packaging:
@@ -68,13 +68,13 @@ Not required by the tool: `jq`, `fzf`, `gum`, `dialog`, `zellij`, `textual`, `pr
 Run this after install to verify a machine:
 
 ```bash
-codex-sessions doctor
+agentic-sessions doctor
 ```
 
-Use `--strict` when validating full sidebar/resume readiness, including optional `codex` and `tmux`:
+Use `--strict` when validating full sidebar/resume readiness, including the selected agent CLI and `tmux`:
 
 ```bash
-codex-sessions doctor --strict
+agentic-sessions doctor --strict
 ```
 
 ## Quick Start
@@ -84,25 +84,25 @@ From this folder:
 ```bash
 ./install.sh --aliases
 # Follow the printed "Quick start" commands to reload aliases for this shell.
-cs doctor
-cs list -n 10
-cs tmux
+ags doctor
+ags list -n 10
+ags tmux
 ```
 
 Claude Code sessions use the same commands with `--provider claude`:
 
 ```bash
-cs --provider claude doctor
-cs --provider claude list -n 10
-cs --provider claude tmux
+ags --provider claude doctor
+ags --provider claude list -n 10
+ags --provider claude tmux
 ```
 
 Without installing:
 
 ```bash
-export PATH=/path/to/codex-session-tools/bin:$PATH
-codex-sessions list -n 10
-codex-sessions tmux
+export PATH=/path/to/agentic-session-tools/bin:$PATH
+agentic-sessions list -n 10
+agentic-sessions tmux
 ```
 
 If Codex is not in `PATH`, or you need a Codex-compatible wrapper:
@@ -111,7 +111,7 @@ If Codex is not in `PATH`, or you need a Codex-compatible wrapper:
 export CODEX_BIN=/absolute/path/to/codex
 # Optional: if sessions live outside the default Codex home
 export CODEX_HOME=/absolute/path/to/codex-home-or-agent
-codex-sessions tmux
+agentic-sessions tmux
 ```
 
 For Claude Code, use:
@@ -119,13 +119,13 @@ For Claude Code, use:
 ```bash
 export CLAUDE_BIN=/absolute/path/to/claude
 export CLAUDE_CONFIG_DIR=/absolute/path/to/claude-config
-codex-sessions --provider claude tmux
+agentic-sessions --provider claude tmux
 ```
 
 For machine-local defaults without changing your shell rc, create an ignored local env file next to this repo:
 
 ```bash
-cat > .codex-session-tools.env <<'EOF'
+cat > .agentic-session-tools.env <<'EOF'
 CODEX_HOME=/absolute/path/to/codex-home-or-agent
 CODEX_BIN=/absolute/path/to/codex-or-compatible-wrapper
 CLAUDE_CONFIG_DIR=/absolute/path/to/claude-config
@@ -141,7 +141,7 @@ Install to `~/.local/bin`:
 ./install.sh
 ```
 
-Install and add `cs`/`cxs` aliases:
+Install and add convenience aliases:
 
 ```bash
 ./install.sh --aliases
@@ -155,7 +155,10 @@ Install to a custom prefix:
 export PATH="$HOME/tools/bin:$PATH"
 ```
 
-The installer copies only `bin/codex-sessions`; the tool remains relocatable.
+The installer copies `bin/agentic-sessions` plus a compatibility `bin/codex-sessions` wrapper; the tool remains relocatable.
+
+`agentic-sessions` is the primary command. `codex-sessions` remains installed as
+a backward-compatible entry point for existing scripts and muscle memory.
 
 
 ## Shell RC / Alias Notes
@@ -165,7 +168,8 @@ The tool itself does **not** require `~/.zshrc`, `~/.bashrc`, or any team-specif
 Shell rc changes are optional and only used for convenience aliases:
 
 ```bash
-alias cs='/path/to/codex-sessions '
+alias ags='/path/to/agentic-sessions '
+alias cs='/path/to/agentic-sessions '
 alias cxs='/path/to/codex-sessions '
 ```
 
@@ -182,13 +186,13 @@ If a teammate does not want rc-file changes, use one of these instead:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
-codex-sessions tmux
+agentic-sessions tmux
 ```
 
 or run directly:
 
 ```bash
-/path/to/codex-session-tools/bin/codex-sessions tmux
+/path/to/agentic-session-tools/bin/agentic-sessions tmux
 ```
 
 If someone has a custom `codex()` or `claude()` shell function in their rc file, it is not required by this tool.
@@ -208,55 +212,55 @@ For teams that wrap Codex with `script` for chat logs, ensure the util-linux `sc
 script -qf -c "/path/to/codex resume <id>" /path/to/logfile
 ```
 
-BSD/macOS variants may differ; this wrapper is optional and not part of `codex-session-tools`.
+BSD/macOS variants may differ; this wrapper is optional and not part of `agentic-session-tools`.
 
 ## Commands
 
 Show detected paths and dependency status:
 
 ```bash
-codex-sessions paths
-codex-sessions doctor
-codex-sessions doctor --strict
-codex-sessions --provider claude doctor
+agentic-sessions paths
+agentic-sessions doctor
+agentic-sessions doctor --strict
+agentic-sessions --provider claude doctor
 ```
 
 List sessions:
 
 ```bash
-codex-sessions list -n 20
-codex-sessions list -q rv_github
-codex-sessions list --long
-codex-sessions list --json
-codex-sessions --provider claude list -n 20
+agentic-sessions list -n 20
+agentic-sessions list -q rv_github
+agentic-sessions list --long
+agentic-sessions list --json
+agentic-sessions --provider claude list -n 20
 ```
 
 Rename a session using sidecar metadata:
 
 ```bash
-codex-sessions rename 019eda11 "RPMI telemetry docs"
-codex-sessions rename 019eda11 ""   # clear custom title
+agentic-sessions rename 019eda11 "RPMI telemetry docs"
+agentic-sessions rename 019eda11 ""   # clear custom title
 ```
 
 Resume a session:
 
 ```bash
-codex-sessions resume 019eda11
-codex-sessions resume "RPMI telemetry"
-codex-sessions --provider claude resume 5656cd9d
+agentic-sessions resume 019eda11
+agentic-sessions resume "RPMI telemetry"
+agentic-sessions --provider claude resume 5656cd9d
 ```
 
 Trash a session JSONL file:
 
 ```bash
-codex-sessions delete 019eda11
+agentic-sessions delete 019eda11
 ```
 
 Launch the tmux sidebar:
 
 ```bash
-codex-sessions tmux
-codex-sessions --provider claude tmux
+agentic-sessions tmux
+agentic-sessions --provider claude tmux
 ```
 
 Inside an existing tmux session, `tmux` mode splits the current window into panes.
@@ -339,21 +343,23 @@ Use `--state-root DIR` to keep metadata somewhere else.
 Use these when auto-detection does not match your setup:
 
 ```bash
-codex-sessions --agent-home /path/to/agent paths
-codex-sessions --sessions-root /path/to/sessions list
-codex-sessions --state-root /path/to/state rename <id> "Title"
-codex-sessions tmux --codex-bin /path/to/codex
-codex-sessions --provider claude --agent-home /path/to/.claude paths
-codex-sessions --provider claude tmux --claude-bin /path/to/claude
+agentic-sessions --agent-home /path/to/agent paths
+agentic-sessions --sessions-root /path/to/sessions list
+agentic-sessions --state-root /path/to/state rename <id> "Title"
+agentic-sessions tmux --codex-bin /path/to/codex
+agentic-sessions --provider claude --agent-home /path/to/.claude paths
+agentic-sessions --provider claude tmux --claude-bin /path/to/claude
 ```
 
 Environment variables:
 
-- `CODEX_SESSION_PROVIDER`: default provider, `codex` or `claude`
+- `AGENTIC_SESSION_PROVIDER`: default provider, `codex` or `claude`
+- `CODEX_SESSION_PROVIDER`: legacy default-provider variable, still honored
 - `CODEX_BIN`: explicit Codex binary path
 - `CODEX_HOME`: agent home containing `sessions/`, or CLI home containing `agent/sessions/`
 - `CODEX_SESSIONS_ROOT`: explicit rollout JSONL session root; overrides `CODEX_HOME`
-- `CODEX_SESSION_TOOLS_HOME`: sidecar metadata root
+- `AGENTIC_SESSION_TOOLS_HOME`: sidecar metadata root for both providers
+- `CODEX_SESSION_TOOLS_HOME`: legacy sidecar metadata root, still honored
 - `CLAUDE_BIN`: explicit Claude Code binary path
 - `CLAUDE_CONFIG_DIR` or `CLAUDE_HOME`: Claude config dir containing `projects/`
 - `CLAUDE_SESSIONS_ROOT`: explicit Claude JSONL session root; overrides `CLAUDE_CONFIG_DIR`
@@ -364,8 +370,8 @@ Environment variables:
 This package was smoke-tested in a clean Docker container based on Ubuntu with Python 3.8.10, no `tmux`, and no real Codex installed. The script is kept Python 3.7-compatible for older hosts. Validated paths:
 
 - `install.sh --prefix ... --aliases --shell ...`
-- `codex-sessions doctor` with missing optional `codex`/`tmux` warnings
-- `codex-sessions doctor --strict` failing when optional sidebar/resume deps are absent
+- `agentic-sessions doctor` with missing optional agent/tmux warnings
+- `agentic-sessions doctor --strict` failing when optional sidebar/resume deps are absent
 - `list`, `rename`, `delete`, and trash manifest using fake session JSONL
 - `resume` using a fake `codex` binary in `PATH`
 - `--provider claude` paths, doctor, list, resume command rendering, and tmux dry-run against local Claude Code JSONL sessions
@@ -380,7 +386,7 @@ Restart the sidebar after updating this tool. The current sidebar process may st
 be using old code. Also verify:
 
 ```bash
-codex-sessions resume <id> --print-command
+agentic-sessions resume <id> --print-command
 ```
 
 It should print an absolute Codex path when Codex is installed in `~/.local/bin`.
@@ -393,7 +399,7 @@ export CODEX_BIN=/absolute/path/to/codex
 For Claude sessions, use:
 
 ```bash
-codex-sessions --provider claude resume <id> --print-command
+agentic-sessions --provider claude resume <id> --print-command
 export CLAUDE_BIN=/absolute/path/to/claude
 ```
 
@@ -404,7 +410,7 @@ without reparsing JSONL on every keypress. Press `R` to refresh manually.
 
 ### Sidebar creates a new window inside tmux
 
-Use the latest version. Inside tmux, `codex-sessions tmux` should split the current
+Use the latest version. Inside tmux, `agentic-sessions tmux` should split the current
 window, not create a new window.
 
 ### I am stuck at Codex's working-directory prompt
@@ -417,14 +423,14 @@ tool version. Current versions automatically focus the right pane after `Enter`.
 Check detected paths:
 
 ```bash
-codex-sessions paths
+agentic-sessions paths
 ```
 
 Then override if needed:
 
 ```bash
-codex-sessions --sessions-root /path/to/sessions list -n 20
-codex-sessions --provider claude --sessions-root /path/to/claude/projects list -n 20
+agentic-sessions --sessions-root /path/to/sessions list -n 20
+agentic-sessions --provider claude --sessions-root /path/to/claude/projects list -n 20
 ```
 
 ## Sharing With Teammates
@@ -434,24 +440,24 @@ Recommended options:
 1. Share the directory as-is:
 
    ```bash
-   tar -czf codex-session-tools.tar.gz codex-session-tools
+   tar -czf agentic-session-tools.tar.gz agentic-session-tools
    ```
 
 2. Teammates unpack and install:
 
    ```bash
-   tar -xzf codex-session-tools.tar.gz
-   cd codex-session-tools
+   tar -xzf agentic-session-tools.tar.gz
+   cd agentic-session-tools
    ./install.sh --aliases
    # Follow the printed "Quick start" commands.
-   cs tmux
+   ags tmux
    ```
 
 3. Or run directly without installation:
 
    ```bash
-   ./bin/codex-sessions list -n 10
-   ./bin/codex-sessions tmux
+   ./bin/agentic-sessions list -n 10
+   ./bin/agentic-sessions tmux
    ```
 
 ## Uninstall
@@ -459,14 +465,16 @@ Recommended options:
 If installed to `~/.local/bin`:
 
 ```bash
+rm -f ~/.local/bin/agentic-sessions
 rm -f ~/.local/bin/codex-sessions
 ```
 
 If aliases were added, remove this block from your shell rc file:
 
 ```bash
-# codex-session-tools aliases
-alias cs='.../codex-sessions '
+# agentic-session-tools aliases
+alias ags='.../agentic-sessions '
+alias cs='.../agentic-sessions '
 alias cxs='.../codex-sessions '
 ```
 
@@ -474,6 +482,7 @@ Sidecar metadata is not removed automatically. To remove it:
 
 ```bash
 rm -rf ~/.codex/session-tools
+rm -rf ~/.claude/session-tools
 ```
 
 Review the trash folder before deleting it if you used `delete`.

@@ -3,21 +3,21 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Install codex-session-tools for the current user.
+Install agentic-session-tools for the current user.
 
 Usage:
   ./install.sh [--prefix DIR] [--aliases] [--shell rcfile]
 
 Options:
   --prefix DIR   Install prefix. Default: ~/.local
-  --aliases      Append cs/cxs aliases to the detected running shell rc file
+  --aliases      Append ags/cs/cxs aliases to the detected running shell rc file
   --shell FILE   Shell rc file to update when --aliases is used
   -h, --help     Show this help
 
 Examples:
   ./install.sh
   ./install.sh --aliases
-  ./install.sh --prefix ~/tools/codex-session-tools
+  ./install.sh --prefix ~/tools/agentic-session-tools
 USAGE
 }
 
@@ -116,14 +116,18 @@ if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi
 if ! command -v tmux >/dev/null 2>&1; then
-  echo "warning: tmux not found; list/rename/delete/resume work, but 'codex-sessions tmux' will not" >&2
+  echo "warning: tmux not found; list/rename/delete/resume work, but 'agentic-sessions tmux' will not" >&2
 fi
 if [[ -z "${CODEX_BIN:-}" ]] && ! command -v codex >/dev/null 2>&1 && [[ ! -x "$HOME/.local/bin/codex" ]]; then
-  echo "warning: codex not found in PATH or ~/.local/bin; set CODEX_BIN=/path/to/codex for resume/tmux" >&2
+  echo "warning: codex not found in PATH or ~/.local/bin; set CODEX_BIN=/path/to/codex for Codex resume/tmux" >&2
+fi
+if [[ -z "${CLAUDE_BIN:-}" ]] && ! command -v claude >/dev/null 2>&1 && [[ ! -x "$HOME/.local/bin/claude" ]]; then
+  echo "warning: claude not found in PATH or ~/.local/bin; set CLAUDE_BIN=/path/to/claude for Claude resume/tmux" >&2
 fi
 
 install_bin="$prefix/bin"
 mkdir -p "$install_bin"
+install -m 0755 "$src_dir/bin/agentic-sessions" "$install_bin/agentic-sessions"
 install -m 0755 "$src_dir/bin/codex-sessions" "$install_bin/codex-sessions"
 
 if [[ "$add_aliases" -eq 1 ]]; then
@@ -135,11 +139,12 @@ if [[ "$add_aliases" -eq 1 ]]; then
   fi
   mkdir -p "$(dirname "$shell_rc")"
   touch "$shell_rc"
-  if ! grep -q "codex-session-tools aliases" "$shell_rc"; then
+  if ! grep -q "agentic-session-tools aliases" "$shell_rc"; then
     cat >> "$shell_rc" <<ALIASES
 
-# codex-session-tools aliases
-alias cs='$install_bin/codex-sessions '
+# agentic-session-tools aliases
+alias ags='$install_bin/agentic-sessions '
+alias cs='$install_bin/agentic-sessions '
 alias cxs='$install_bin/codex-sessions '
 ALIASES
     alias_status="added to $shell_rc"
@@ -148,12 +153,16 @@ ALIASES
   fi
 fi
 
-python3 -m py_compile "$install_bin/codex-sessions"
+python3 -m py_compile "$install_bin/agentic-sessions"
 rm -rf "$install_bin/__pycache__"
+"$install_bin/agentic-sessions" --help >/dev/null
 "$install_bin/codex-sessions" --help >/dev/null
 
 cat <<MSG
-Installed codex-sessions to:
+Installed agentic-sessions to:
+  $install_bin/agentic-sessions
+
+Compatibility command also installed:
   $install_bin/codex-sessions
 
 Install check passed.
@@ -166,14 +175,16 @@ MSG
 if [[ "$add_aliases" -eq 1 ]]; then
   cat <<MSG
   $(source_command_for "$shell_rc")
-  cs doctor
-  cs list -n 10
-  cs tmux
+  ags doctor
+  ags list -n 10
+  ags --provider claude list -n 10
+  ags tmux
 MSG
 else
   cat <<'MSG'
-  codex-sessions doctor
-  codex-sessions list -n 10
-  codex-sessions tmux
+  agentic-sessions doctor
+  agentic-sessions list -n 10
+  agentic-sessions --provider claude list -n 10
+  agentic-sessions tmux
 MSG
 fi

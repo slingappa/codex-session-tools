@@ -289,7 +289,7 @@ Outside tmux, it creates a new tmux session with one window and two panes.
 
 - `j` / `k` or arrow keys: move selection
 - `Enter`: suspend the current right-pane agent with `Ctrl-Z`, resume selected session, and focus that pane
-- `r`: native rename the selected session after it has been resumed in the right pane
+- `r`: prefill native `/rename` in the right pane for the active resumed session
 - `d`: trash selected session after typing `DELETE`
 - `/`: search/filter sessions
 - `c`: clear search filter
@@ -305,10 +305,12 @@ Outside tmux, it creates a new tmux session with one window and two panes.
 The sidebar shows sessions as compact boxed cards with provider/time, cwd,
 provider/native or custom `name`, two lines of prompt `context`, and short id.
 Native names are read when available, for example Codex/QGenie `thread_name`
-from `session_index.jsonl` and Claude `slug` from project JSONL. `r` sends the
+from `session_index.jsonl` and Claude `slug` from project JSONL. `r` stages the
 provider-native `/rename` command only for the active session already resumed in
-the right pane; if another row is selected, resume it first. If the pane is still
-busy, the sidebar asks you to wait. Prompt context remains separate. The
+the right pane, then leaves the cursor there for editing and Enter; if another
+row is selected, resume it first. If the pane is still busy, the sidebar asks
+you to wait. Prompt context remains separate and is never used as a rename
+default. The
 sidebar first sorts candidate session files by last-used file mtime, then parses
 them in small chunks so the pane can paint quickly and keep refreshing
 newest-first. It caches loaded rows for fast arrow-key navigation and reloads

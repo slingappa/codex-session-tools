@@ -48,7 +48,7 @@
 <text x="652" y="154" fill="#d1d5db" font-weight="700">Sidebar keys:</text>
 <text x="652" y="178" fill="#d1d5db">  j/k or arrows : move</text>
 <text x="652" y="200" fill="#d1d5db">  Enter         : resume here</text>
-<text x="652" y="222" fill="#d1d5db">  r             : native rename active session</text>
+<text x="652" y="222" fill="#d1d5db">  r             : prefill native /rename</text>
 <text x="652" y="244" fill="#d1d5db">  d             : trash; confirm DELETE</text>
 <text x="652" y="266" fill="#d1d5db">  /             : search</text>
 <text x="652" y="288" fill="#d1d5db">  c             : clear search</text>
@@ -62,7 +62,7 @@
 <text x="652" y="464" fill="#d1d5db">  mouse click: focus clicked pane if tmux mouse is on</text>
 <text x="652" y="488" fill="#7dd3fc" font-weight="700">Rename flow:</text>
 <text x="652" y="516" fill="#d1d5db">1. Enter resumes the selected session in this pane.</text>
-<text x="652" y="538" fill="#d1d5db">2. r sends /rename only if this session is active.</text>
+<text x="652" y="538" fill="#d1d5db">2. r stages /rename here; edit and press Enter.</text>
 <text x="652" y="560" fill="#d1d5db">3. Refresh reloads native provider metadata.</text>
 <text x="652" y="582" fill="#d1d5db">If the agent is still generating, sidebar shows:</text>
 <text x="652" y="604" fill="#fbbf24">wait, session busy</text>

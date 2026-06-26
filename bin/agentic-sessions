@@ -2072,18 +2072,8 @@ def sidebar_curses(stdscr: curses.window, args: argparse.Namespace) -> int:
                     message = "wait, session busy"
                 else:
                     default_title = default_native_rename_title(current)
-                    if not default_title:
-                        send_native_rename_to_pane(args.target_pane, "", submit=False)
-                        message = "type native name in agent pane"
-                    else:
-                        value = prompt(stdscr, height - 1, "native name", default_title)
-                        if value is not None:
-                            value = sanitize_native_name(value) or default_title
-                            send_native_rename_to_pane(args.target_pane, value)
-                            current.native_title = value
-                            message = f"sent native rename for {current.id[:12]}"
-                            time.sleep(0.4)
-                            needs_reload = True
+                    send_native_rename_to_pane(args.target_pane, default_title, submit=False)
+                    message = "edit native name in agent pane"
         elif key == ord("d"):
             if sessions:
                 current = sessions[selected]
